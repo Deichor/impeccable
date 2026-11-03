@@ -11,16 +11,7 @@ description = "Debug-build bridge between a GPUI app and Impeccable: window capt
 [features]
 default = ["gpui-0-2"]
 # The crates.io GPUI release apps use today.
-gpui-0-2 = [
-    "dep:gpui",
-    "dep:objc2",
-    "dep:objc2-app-kit",
-    "dep:objc2-core-foundation",
-    "dep:objc2-core-graphics",
-    "dep:objc2-foundation",
-    "dep:objc2-screen-capture-kit",
-    "dep:block2",
-]
+gpui-0-2 = ["dep:gpui"]
 # Zed's weekly gpui-pre snapshots, which gpui-kit also builds on.
 # `font-kit` is the macOS text system; without it GPUI paints no text there.
 gpui-pre = ["dep:gpui-pre", "dep:gpui_platform", "gpui_platform/font-kit"]
@@ -44,15 +35,15 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
-# gpui 0.2 on macOS: ScreenCaptureKit captures and in-process pointer events.
+# macOS: ScreenCaptureKit captures (loaded at run time, so older systems still
+# launch) and in-process pointer events.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.6", optional = true }
-objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
-objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "CFCGTypes"] }
-objc2-core-graphics = { version = "0.3", optional = true, default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGSession", "CGWindow"] }
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSProcessInfo", "NSString"] }
-objc2-screen-capture-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
-block2 = { version = "0.6", optional = true }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "objc2", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "objc2", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGSession", "CGWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSProcessInfo", "NSString"] }
+block2 = "0.6"
 
 [[example]]
 name = "demo"
@@ -61,5 +52,3 @@ name = "demo"
 # same patch to their own workspace root.
 [patch.crates-io]
 gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
-gpui-pre-macos = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
-gpui-pre-apple = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }

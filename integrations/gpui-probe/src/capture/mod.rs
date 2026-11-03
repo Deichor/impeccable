@@ -1,13 +1,15 @@
 //! Window capture. GPUI draws through the GPU, so a plain screen grab of a
 //! covered or off-screen window comes back blank. Each platform asks for the
-//! window itself: the compositor on Windows, GPUI's own renderer on gpui-pre
-//! (macOS), ScreenCaptureKit on gpui 0.2 (macOS).
+//! window itself: the compositor on Windows, and on macOS GPUI's own renderer
+//! (gpui-pre with the fork, `snapshot`) or else ScreenCaptureKit.
 
-use gpui::{App, Window};
+use std::sync::mpsc;
 
-#[cfg(all(target_os = "macos", feature = "gpui-0-2"))]
+use gpui::Window;
+
+#[cfg(target_os = "macos")]
 mod macos;
-#[cfg(all(target_os = "macos", feature = "gpui-pre"))]
+#[cfg(all(target_os = "macos", feature = "snapshot"))]
 mod render;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -17,48 +19,85 @@ pub use macos::post_pointer;
 #[cfg(all(target_os = "windows", feature = "gpui-0-2"))]
 pub use windows::post_pointer;
 
-#[cfg(all(target_os = "macos", feature = "gpui-0-2"))]
-use macos::window_rgba;
-#[cfg(target_os = "windows")]
-use windows::window_rgba;
-
-pub fn window_png(window: &mut Window, cx: &mut App) -> Result<Vec<u8>, String> {
-    #[cfg(all(target_os = "macos", feature = "gpui-pre"))]
-    let rgba = render::window_rgba(window, cx)?;
-    #[cfg(not(all(target_os = "macos", feature = "gpui-pre")))]
-    let rgba = {
-        let _ = cx;
-        window_rgba(window)?
-    };
-    encode_png(&rgba.pixels, rgba.width, rgba.height)
-}
-
 /// Straight RGBA, row-major, top row first.
-#[allow(dead_code)]
-pub(crate) struct Rgba {
+pub struct Rgba {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
 }
 
-fn encode_png(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+/// A capture in flight: done at once, or answered later off the main thread.
+#[allow(dead_code)]
+pub enum Shot {
+    Done(Result<Rgba, String>),
+    Pending(mpsc::Receiver<Result<Rgba, String>>),
+}
+
+/// Start capturing the window's latest frame; the caller makes sure one was drawn.
+pub fn start(window: &Window) -> Result<Shot, String> {
+    #[cfg(target_os = "windows")]
+    return Ok(Shot::Done(windows::window_rgba(window)));
+    #[cfg(all(target_os = "macos", feature = "snapshot"))]
+    if let Ok(rgba) = render::window_rgba(window) {
+        return Ok(Shot::Done(Ok(rgba)));
+    }
+    // Without the fork's macOS renderer, render_to_image is not implemented.
+    #[cfg(target_os = "macos")]
+    return macos::start(window);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = window;
+        Err("window capture is implemented for Windows and macOS only so far".into())
+    }
+}
+
+/// Why a pending capture never answered.
+pub fn timeout_error() -> String {
+    #[cfg(target_os = "macos")]
+    return macos::timeout_error();
+    #[cfg(not(target_os = "macos"))]
+    "the capture did not finish in time".into()
+}
+
+pub fn png(rgba: Rgba) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     {
-        let mut enc = png::Encoder::new(&mut out, width, height);
+        let mut enc = png::Encoder::new(&mut out, rgba.width, rgba.height);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-        writer.write_image_data(pixels).map_err(|e| e.to_string())?;
+        writer.write_image_data(&rgba.pixels).map_err(|e| e.to_string())?;
     }
     Ok(out)
 }
 
-#[cfg(all(not(any(target_os = "windows", target_os = "macos")), feature = "gpui-0-2"))]
+/// Premultiplied RGBA to straight alpha, in place.
+#[allow(dead_code)]
+fn unpremultiply(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        if a != 0 && a != 255 {
+            for c in &mut px[..3] {
+                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(feature = "gpui-0-2")]
 pub fn post_pointer(_window: &Window, _x: f32, _y: f32, _click: bool) -> Result<(), String> {
     Err("picking by point is implemented for Windows and macOS only so far; pick in the window instead".into())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn window_rgba(_window: &Window) -> Result<Rgba, String> {
-    Err("window capture is implemented for Windows and macOS only so far".into())
+#[cfg(test)]
+mod tests {
+    use super::unpremultiply;
+
+    #[test]
+    fn unpremultiply_restores_straight_alpha_and_keeps_opaque_and_clear_pixels() {
+        let mut px = [64, 32, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0];
+        unpremultiply(&mut px);
+        assert_eq!(px, [128, 64, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0]);
+    }
 }

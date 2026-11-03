@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -199,14 +199,71 @@ fn pointer(cx: &mut App, x: f32, y: f32, click: bool) -> Result<(), String> {
     .ok_or_else(|| "no window".to_string())
 }
 
-/// Draw a frame now. A covered or locked window gets no display-link ticks
-/// on macOS, so the inspector and snapshots would wait forever; the next tick
-/// presents the frame, so the screen catches up.
-fn draw_now(window: &mut Window, cx: &mut App) {
-    #[cfg(feature = "gpui-0-2")]
-    window.draw(cx).clear();
-    #[cfg(feature = "gpui-pre")]
-    window.draw(cx).clear(cx);
+/// Make sure the window drew a frame with the current state. A covered or
+/// locked window gets no display-link ticks on macOS, so when no frame comes
+/// within a short deadline the probe draws one itself; the next tick presents it.
+async fn ensure_frame(cx: &mut AsyncApp) {
+    let drawn = Rc::new(Cell::new(false));
+    let flag = drawn.clone();
+    let asked = cx.up(|cx| {
+        with_window(cx, move |window, _| {
+            window.on_next_frame(move |_, _| flag.set(true));
+            window.refresh();
+        })
+    });
+    if !matches!(asked, Ok(Some(()))) {
+        return;
+    }
+    for _ in 0..10 {
+        cx.background_executor().timer(Duration::from_millis(10)).await;
+        if drawn.get() {
+            return;
+        }
+    }
+    let _ = cx.up(|cx| {
+        with_window(cx, |window, cx| {
+            #[cfg(feature = "gpui-0-2")]
+            window.draw(cx).clear();
+            #[cfg(feature = "gpui-pre")]
+            window.draw(cx).clear(cx);
+        })
+    });
+}
+
+async fn capture(cx: &mut AsyncApp) -> Reply {
+    use crate::capture::{self, Shot};
+    ensure_frame(cx).await;
+    let shot = match cx.up(|cx| with_window(cx, |window, _| capture::start(window))) {
+        Ok(Some(Ok(shot))) => shot,
+        Ok(Some(Err(e))) => return Reply::error(500, &e),
+        _ => return Reply::error(409, "no window"),
+    };
+    let rgba = match shot {
+        Shot::Done(rgba) => rgba,
+        // Answered off the main thread; give up after 5 seconds.
+        Shot::Pending(rx) => {
+            let mut answer = None;
+            for _ in 0..250 {
+                match rx.try_recv() {
+                    Ok(rgba) => {
+                        answer = Some(rgba);
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => cx.background_executor().timer(Duration::from_millis(20)).await,
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+            answer.unwrap_or_else(|| Err(capture::timeout_error()))
+        }
+    };
+    let png = match rgba {
+        Ok(rgba) => cx.background_executor().spawn(async move { capture::png(rgba) }).await,
+        Err(e) => Err(e),
+    };
+    match png {
+        Ok(png) => Reply::png(png),
+        Err(e) => Reply::error(500, &e),
+    }
 }
 
 fn with_window<R>(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) -> R) -> Option<R> {
@@ -468,14 +525,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
             }
             None => Reply::error(400, "body needs dark: true|false"),
         },
-        ("GET", "/capture") => {
-            let r = cx.up(|cx| with_window(cx, crate::capture::window_png));
-            match r {
-                Ok(Some(Ok(png))) => Reply::png(png),
-                Ok(Some(Err(e))) => Reply::error(500, &e),
-                _ => Reply::error(409, "no window"),
-            }
-        }
+        ("GET", "/capture") => capture(cx).await,
         ("POST", "/inspector") => {
             let open = body["open"].as_bool();
             match cx.up(|cx| set_inspector(cx, open)) {
@@ -492,11 +542,11 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
                 cx.background_executor().timer(Duration::from_millis(150)).await;
                 let moved = cx.up(|cx| pointer(cx, x as f32, y as f32, false));
                 cx.background_executor().timer(Duration::from_millis(150)).await;
-                let _ = cx.up(|cx| with_window(cx, draw_now));
+                ensure_frame(cx).await;
                 let clicked = cx.up(|cx| pointer(cx, x as f32, y as f32, true));
                 // The picked element records its state on the next frame.
                 cx.background_executor().timer(Duration::from_millis(250)).await;
-                let _ = cx.up(|cx| with_window(cx, draw_now));
+                ensure_frame(cx).await;
                 match (moved, clicked) {
                     (Ok(Ok(())), Ok(Ok(()))) => cx.up(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
                     (Ok(Err(e)), _) | (_, Ok(Err(e))) => Reply::error(500, &e),
@@ -660,11 +710,9 @@ async fn take_snapshot(cx: &mut AsyncApp) -> Result<Value, String> {
     if !matches!(requested, Ok(Some(()))) {
         return Err("no window".into());
     }
-    for i in 0..150 {
+    ensure_frame(cx).await;
+    for _ in 0..150 {
         cx.background_executor().timer(Duration::from_millis(20)).await;
-        if i == 10 {
-            let _ = cx.up(|cx| with_window(cx, draw_now));
-        }
         if let Ok(Some(Some(snap))) = cx.up(|cx| with_window(cx, |window, _| window.take_ui_snapshot())) {
             return Ok(snapshot_json(&snap));
         }

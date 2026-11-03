@@ -1,61 +1,71 @@
-//! macOS on gpui 0.2, which has no offscreen render. ScreenCaptureKit
-//! captures the window alone, covered or not. Pointer input is posted to the
-//! app's own event queue as `NSEvent`s, so picking needs no permission.
+//! macOS. ScreenCaptureKit captures the window as it was last presented. It is
+//! loaded at run time, so systems without it still launch; capture needs
+//! macOS 14. Its callbacks run on its own queue, so the main thread never
+//! waits. Pointer input is posted to the app's own event queue as `NSEvent`s,
+//! so picking needs no permission.
 
-use std::ffi::c_void;
-use std::sync::mpsc;
+use std::ffi::{c_char, c_int, c_void};
+use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
 
 use block2::RcBlock;
 use gpui::Window;
-use objc2::rc::Retained;
-use objc2::runtime::AnyClass;
-use objc2::{sel, AllocAnyThread, ClassType, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView, NSWindow};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2::{msg_send, sel};
+use objc2_app_kit::{NSView, NSWindow, NSWindowOcclusionState};
 use objc2_core_foundation::{CFDictionary, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     kCGColorSpaceSRGB, CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
     CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess, CGSessionCopyCurrentDictionary,
 };
-use objc2_foundation::{ns_string, NSDictionary, NSError, NSPoint, NSProcessInfo, NSString};
-use objc2::runtime::AnyObject;
-use objc2_screen_capture_kit::{
-    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow,
-};
+use objc2_foundation::{ns_string, NSArray, NSDictionary, NSError, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use super::Rgba;
+use super::{unpremultiply, Rgba, Shot};
 
 const SCREEN_RECORDING: &str = "window capture needs the Screen Recording permission: grant it to the app that \
      launched this one (your terminal or editor) in System Settings > Privacy & Security > Screen & System Audio \
      Recording, then restart the app";
 const LOCKED: &str = "the screen is locked, and macOS captures no window while it is; unlock it and retry";
-const TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "gpui-0-2")]
+const COVERED: &str = "the window is covered, minimized or on another Space, and macOS does not redraw it there; \
+     bring it to the front and retry";
+#[cfg(feature = "gpui-pre")]
+const COVERED: &str = "the window is covered, minimized or on another Space, and macOS does not redraw it there; \
+     bring it to the front, or build with the `snapshot` feature and the fork's gpui-pre-macos and gpui-pre-apple \
+     to render it offscreen";
 /// `SCStreamErrorUserDeclined`.
 const USER_DECLINED: isize = -3801;
+const TIMEOUT: Duration = Duration::from_secs(5);
 
-fn ns_window(window: &Window) -> Result<Retained<NSWindow>, String> {
+type Answer = mpsc::Sender<Result<Rgba, String>>;
+
+fn gpui_view(window: &Window) -> Result<&NSView, String> {
     let handle = HasWindowHandle::window_handle(window).map_err(|e| e.to_string())?;
     let RawWindowHandle::AppKit(h) = handle.as_raw() else {
         return Err("not an AppKit window".into());
     };
-    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
-    view.window().ok_or_else(|| "the view has no window".into())
+    // The view lives as long as the window.
+    Ok(unsafe { h.ns_view.cast::<NSView>().as_ref() })
 }
 
-/// Lets a retained object cross from ScreenCaptureKit's callback queue.
-struct Sent<T>(Retained<T>);
-unsafe impl<T> Send for Sent<T> {}
+fn ns_window(window: &Window) -> Result<Retained<NSWindow>, String> {
+    gpui_view(window)?.window().ok_or_else(|| "the view has no window".into())
+}
 
-type Reply<T> = Result<Sent<T>, String>;
-
-fn error_text(error: *mut NSError) -> String {
-    match unsafe { error.as_ref() } {
-        Some(e) if e.code() == USER_DECLINED => SCREEN_RECORDING.into(),
-        Some(_) if screen_locked() => LOCKED.into(),
-        Some(e) => format!("{} ({} {})", e.localizedDescription(), e.domain(), e.code()),
-        None => "no result".into(),
+/// Load ScreenCaptureKit once; `None` when the system has no screenshot API.
+fn screenshot_manager() -> Option<&'static AnyClass> {
+    static LOADED: OnceLock<bool> = OnceLock::new();
+    extern "C" {
+        fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
     }
+    const RTLD_LAZY: c_int = 1;
+    let path = c"/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit";
+    if !*LOADED.get_or_init(|| unsafe { !dlopen(path.as_ptr(), RTLD_LAZY).is_null() }) {
+        return None;
+    }
+    AnyClass::get(c"SCScreenshotManager")
 }
 
 /// Whether the login session shows the lock screen.
@@ -65,81 +75,123 @@ fn screen_locked() -> bool {
     dict.objectForKey(ns_string!("CGSSessionScreenIsLocked")).is_some()
 }
 
-fn reply<T>(object: *mut T, error: *mut NSError) -> Reply<T>
-where
-    T: objc2::Message,
-{
-    match unsafe { Retained::retain(object) } {
-        Some(o) => Ok(Sent(o)),
-        None => Err(error_text(error)),
+pub fn timeout_error() -> String {
+    if screen_locked() {
+        LOCKED.into()
+    } else {
+        format!("ScreenCaptureKit did not answer in {} seconds", TIMEOUT.as_secs())
     }
 }
 
-/// The app's own windows. macOS 14.4+ answers that without asking the user;
-/// older systems need the Screen Recording permission.
-fn own_content() -> Result<Retained<SCShareableContent>, String> {
-    let (tx, rx) = mpsc::channel::<Reply<SCShareableContent>>();
-    let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
-        let _ = tx.send(reply(content, error));
-    });
-    let own = sel!(getCurrentProcessShareableContentWithCompletionHandler:);
-    unsafe {
-        if SCShareableContent::class().metaclass().responds_to(own) {
-            SCShareableContent::getCurrentProcessShareableContentWithCompletionHandler(&block);
-        } else {
-            if !CGPreflightScreenCaptureAccess() {
-                CGRequestScreenCaptureAccess();
-                return Err(SCREEN_RECORDING.into());
-            }
-            SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-                false, false, &block,
-            );
-        }
+fn error_text(error: *mut NSError) -> String {
+    match unsafe { error.as_ref() } {
+        Some(e) if e.code() == USER_DECLINED => SCREEN_RECORDING.into(),
+        _ if screen_locked() => LOCKED.into(),
+        Some(e) => format!("{} ({} {})", e.localizedDescription(), e.domain(), e.code()),
+        None => "ScreenCaptureKit returned nothing".into(),
     }
-    let content = rx.recv_timeout(TIMEOUT).map_err(|_| "ScreenCaptureKit did not answer".to_string())??;
-    Ok(content.0)
 }
 
-pub fn window_rgba(window: &Window) -> Result<Rgba, String> {
-    if AnyClass::get(c"SCScreenshotManager").is_none() {
-        return Err("window capture on gpui 0.2 needs macOS 14 or later".into());
-    }
+/// What the capture needs from the window, read on the main thread.
+#[derive(Clone, Copy)]
+struct Target {
+    number: u32,
+    /// The content view in window points, top-left origin.
+    source: CGRect,
+    width: usize,
+    height: usize,
+}
+
+pub fn start(window: &Window) -> Result<Shot, String> {
+    let manager = screenshot_manager().ok_or("window capture without the `snapshot` feature needs macOS 14 or later")?;
     let ns_window = ns_window(window)?;
-    let number = ns_window.windowNumber() as u32;
+    if screen_locked() {
+        return Err(LOCKED.into());
+    }
+    if !ns_window.occlusionState().contains(NSWindowOcclusionState::Visible) {
+        return Err(COVERED.into());
+    }
     let frame = ns_window.frame();
-    let content_view = ns_window.contentView().ok_or("the window has no content view")?;
-    let content = content_view.frame();
+    let content = gpui_view(window)?.frame();
     let scale = ns_window.backingScaleFactor();
-
-    let shareable = own_content()?;
-    let windows = unsafe { shareable.windows() };
-    let target: Retained<SCWindow> = windows
-        .iter()
-        .find(|w| unsafe { w.windowID() } == number)
-        .ok_or("ScreenCaptureKit does not list this window (is it minimized?)")?;
-
-    let (width, height) = ((content.size.width * scale).round() as usize, (content.size.height * scale).round() as usize);
-    if width == 0 || height == 0 {
+    let top = frame.size.height - content.origin.y - content.size.height;
+    let target = Target {
+        number: ns_window.windowNumber() as u32,
+        source: CGRect::new(CGPoint::new(content.origin.x, top), content.size),
+        width: (content.size.width * scale).round() as usize,
+        height: (content.size.height * scale).round() as usize,
+    };
+    if target.width == 0 || target.height == 0 {
         return Err("the window has no size to capture".into());
     }
-    let (tx, rx) = mpsc::channel::<Reply<CGImage>>();
-    let block = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
-        let _ = tx.send(reply(image, error));
+
+    let content_class = AnyClass::get(c"SCShareableContent").ok_or("ScreenCaptureKit is missing")?;
+    let (tx, rx) = mpsc::channel();
+    let on_content = RcBlock::new(move |content: *mut AnyObject, error: *mut NSError| {
+        let result = match unsafe { content.as_ref() } {
+            Some(content) => screenshot(manager, content, target, tx.clone()),
+            None => Err(error_text(error)),
+        };
+        if let Err(e) = result {
+            let _ = tx.send(Err(e));
+        }
     });
+    // The app's own windows; macOS 14.4+ lists them without asking the user.
+    let own = sel!(getCurrentProcessShareableContentWithCompletionHandler:);
     unsafe {
-        let filter = SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &target);
-        let config = SCStreamConfiguration::new();
-        // The content view only, in window points with a top-left origin.
-        let top = frame.size.height - content.origin.y - content.size.height;
-        config.setSourceRect(CGRect::new(CGPoint::new(content.origin.x, top), CGSize::new(content.size.width, content.size.height)));
-        config.setWidth(width);
-        config.setHeight(height);
-        config.setShowsCursor(false);
-        config.setIgnoreShadowsSingleWindow(true);
-        SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(&filter, &config, Some(&block));
+        if content_class.metaclass().responds_to(own) {
+            let _: () = msg_send![content_class, getCurrentProcessShareableContentWithCompletionHandler: &*on_content];
+        } else if CGPreflightScreenCaptureAccess() {
+            let _: () = msg_send![
+                content_class,
+                getShareableContentExcludingDesktopWindows: false,
+                onScreenWindowsOnly: false,
+                completionHandler: &*on_content
+            ];
+        } else {
+            CGRequestScreenCaptureAccess();
+            return Err(SCREEN_RECORDING.into());
+        }
     }
-    let image = rx.recv_timeout(TIMEOUT).map_err(|_| "ScreenCaptureKit did not answer".to_string())??;
-    to_rgba(&image.0)
+    Ok(Shot::Pending(rx))
+}
+
+/// Runs on ScreenCaptureKit's queue.
+fn screenshot(manager: &AnyClass, content: &AnyObject, target: Target, answer: Answer) -> Result<(), String> {
+    unsafe {
+        let windows: Retained<NSArray<AnyObject>> = msg_send![content, windows];
+        let window = windows
+            .iter()
+            .find(|w| {
+                let id: u32 = msg_send![&**w, windowID];
+                id == target.number
+            })
+            .ok_or("ScreenCaptureKit does not list this window")?;
+        let filter_class = AnyClass::get(c"SCContentFilter").ok_or("ScreenCaptureKit is missing")?;
+        let config_class = AnyClass::get(c"SCStreamConfiguration").ok_or("ScreenCaptureKit is missing")?;
+        let filter: Allocated<AnyObject> = msg_send![filter_class, alloc];
+        let filter: Retained<AnyObject> = msg_send![filter, initWithDesktopIndependentWindow: &*window];
+        let config: Retained<AnyObject> = msg_send![config_class, new];
+        let _: () = msg_send![&config, setSourceRect: target.source];
+        let _: () = msg_send![&config, setWidth: target.width];
+        let _: () = msg_send![&config, setHeight: target.height];
+        let _: () = msg_send![&config, setShowsCursor: false];
+        let _: () = msg_send![&config, setIgnoreShadowsSingleWindow: true];
+        let on_image = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
+            let result = match image.as_ref() {
+                Some(image) => to_rgba(image),
+                None => Err(error_text(error)),
+            };
+            let _ = answer.send(result);
+        });
+        let _: () = msg_send![
+            manager,
+            captureImageWithFilter: &*filter,
+            configuration: &*config,
+            completionHandler: &*on_image
+        ];
+    }
+    Ok(())
 }
 
 /// Draw the image into an sRGB bitmap we own, then un-premultiply.
@@ -159,20 +211,14 @@ fn to_rgba(image: &CGImage) -> Result<Rgba, String> {
     Ok(Rgba { width: width as u32, height: height as u32, pixels })
 }
 
-fn unpremultiply(pixels: &mut [u8]) {
-    for px in pixels.chunks_exact_mut(4) {
-        let a = px[3] as u32;
-        if a != 0 && a != 255 {
-            for c in &mut px[..3] {
-                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-    }
-}
-
+#[cfg(feature = "gpui-0-2")]
 /// Post a pointer move (and, with `click`, a left click) at a point in
 /// logical pixels to the app's own event queue, as AppKit would deliver it.
 pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSProcessInfo};
+
     let mtm = MainThreadMarker::new().ok_or("pointer events must be posted on the main thread")?;
     let ns_window = ns_window(window)?;
     let content = ns_window.contentView().ok_or("the window has no content view")?.frame();
@@ -205,14 +251,3 @@ pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::unpremultiply;
-
-    #[test]
-    fn unpremultiply_restores_straight_alpha_and_keeps_opaque_and_clear_pixels() {
-        let mut px = [64, 32, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0];
-        unpremultiply(&mut px);
-        assert_eq!(px, [128, 64, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0]);
-    }
-}
