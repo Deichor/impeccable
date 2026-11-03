@@ -58,3 +58,7 @@ name = "demo"
 # same patch to their own workspace root.
 [patch.crates-io]
 gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-macos = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-apple = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-wgpu = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-linux = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
