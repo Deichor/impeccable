@@ -1,7 +1,7 @@
 // Window smoke test: start the demo app, drive the probe over HTTP, and check
 // what a real window answers. Build the demo first:
 //   cargo build --example demo --no-default-features --features snapshot
-// GPUI_PROBE_CAPTURE=1|0 forces the capture check on or off (default: Windows only).
+// GPUI_PROBE_CAPTURE=1|0 turns the capture check on or off (unset: Windows only).
 // IMPECCABLE_BIN (optional) also runs the engine's `gpui snapshot` and `sweep`.
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
@@ -59,6 +59,7 @@ try {
   step('pick');
 
   const capture = process.env.GPUI_PROBE_CAPTURE ?? (process.platform === 'win32' ? '1' : '0');
+  assert.ok(capture === '1' || capture === '0', `GPUI_PROBE_CAPTURE must be 1 or 0, got ${capture}`);
   if (capture === '1') {
     const png = Buffer.from(await (await fetch(url('/capture'))).arrayBuffer());
     assert.equal(png.subarray(1, 4).toString(), 'PNG');

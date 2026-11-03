@@ -59,6 +59,7 @@ Variants change the picked instance only, and only until the inspector closes; t
 ## Limits
 
 - Window capture uses Win32 `PrintWindow`; macOS and Linux return an error for it. Point picking uses posted Win32 messages on gpui 0.2 and GPUI's own event dispatch on gpui-pre, where it works on every platform.
+- On Linux, apps on the default gpui 0.2 feature currently need `cargo update -p libc --precise 0.2.189` until xattr or gpui is fixed upstream (xattr 0.2.3 does not build against libc 0.2.191).
 - Style variants change style only; structure goes through slots, which need one rebuild to add and one to remove.
 - The inspector exists in debug builds (or with GPUI's `inspector` feature).
 - Snapshot findings sit on the element that holds the text; text inside an element built in a library (gpui-component) points into that library.
