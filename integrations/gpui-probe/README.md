@@ -9,7 +9,7 @@ Release builds compile it to nothing.
 ```toml
 # Cargo.toml of the app
 [dependencies]
-impeccable-gpui-probe = { git = "https://github.com/new-horizon-code-repo/impeccable", branch = "feat/desktop-gpui-platform" }
+impeccable-gpui-probe = { git = "https://github.com/new-horizon-code-repo/impeccable", branch = "main" }
 ```
 
 ```rust
