@@ -83,13 +83,14 @@ fn hook_enabled_at(root: &str, env: &Env) -> bool {
     enabled
 }
 
-fn is_native(platform: Option<&str>) -> bool {
-    matches!(platform, Some("ios") | Some("android") | Some("adaptive"))
+/// Whether the detector and the design hook read this project's UI code.
+fn detector_applies(ctx: &Ctx) -> bool {
+    crate::desktop::detector_applies(ctx.platform.as_deref(), ctx.toolkit.as_deref())
 }
 
 /// JS: automaticHookMode(ctx)
 pub fn automatic_hook_mode(ctx: &Ctx, cwd: &str, env: &Env, provider: &Provider) -> &'static str {
-    if is_native(ctx.platform.as_deref()) {
+    if !detector_applies(ctx) {
         return "none";
     }
     let active_root = jsp::resolve(if ctx.project_root.is_empty() { cwd } else { &ctx.project_root }, &[]);
@@ -247,7 +248,7 @@ fn append_detector_fallback(parts: &mut Parts, ctx: &Ctx, cwd: &str, env: &Env, 
     if automatic_hook_mode(ctx, cwd, env, provider) != "none" {
         return;
     }
-    if is_native(ctx.platform.as_deref()) {
+    if !detector_applies(ctx) {
         return;
     }
     parts.push([
@@ -337,6 +338,9 @@ fn append_resolved_context(parts: &mut Parts, ctx: &Ctx, options: &TargetOptions
     m.insert("surfaceBriefCandidates".into(), serde_json::to_value(&ctx.surface_brief_candidates).unwrap());
     m.insert("hasVisualImplementation".into(), Value::Bool(ctx.has_visual_implementation));
     m.insert("platform".into(), opt_string(&ctx.platform));
+    if let Some(toolkit) = &ctx.toolkit {
+        m.insert("toolkit".into(), Value::String(toolkit.clone()));
+    }
     let full = format!("RESOLVED_CONTEXT:\n{}", json_pretty(&Value::Object(m.clone())));
     if ctx.surface_brief_candidates.is_empty() {
         parts.push(full);
@@ -642,11 +646,24 @@ fn write_update_cache(path: &str, cache: &Map<String, Value>) {
 
 // ─── native refs ───────────────────────────────────────────────────────────
 
-fn load_native_platform_references(platform: Option<&str>, provider: &Provider) -> Vec<(String, String, String)> {
+fn desktop_toolkit_directive(toolkit: Option<&str>, provider: &Provider) -> String {
+    match toolkit {
+        Some(crate::desktop::GPUI) => format!(
+            "DESKTOP_TOOLKIT: gpui. The design hook and `{}` read GPUI builder code in `.rs` files: source rules only, with colors and fonts resolved from the Cargo workspace's theme functions and constants. They cannot see what the window paints, so verify contrast, overflow and density from a window screenshot. Live mode and `generate` do not apply.",
+            provider.verb_cmd("detect")
+        ),
+        Some(_) => "DESKTOP_TOOLKIT: web. The window renders web content (Electron, Tauri, NW.js): the web detector and design hook apply to its HTML/CSS/JSX sources, and desktop conventions come from reference/desktop.md.".to_string(),
+        None => "DESKTOP_TOOLKIT: unknown (no GPUI or web-shell dependency found). `impeccable detect`, the design hook, live mode and `generate` do not read this toolkit's UI code: review from source and window screenshots against reference/desktop.md, and do not report an empty detector run as clean.".to_string(),
+    }
+}
+
+fn load_native_platform_references(platform: Option<&str>, toolkit: Option<&str>, provider: &Provider) -> Vec<(String, String, String)> {
     let names: Vec<&str> = match platform {
         Some("adaptive") => vec!["ios", "android"],
         Some("ios") => vec!["ios"],
         Some("android") => vec!["android"],
+        Some("desktop") if toolkit == Some(crate::desktop::GPUI) => vec!["desktop", "gpui"],
+        Some("desktop") => vec!["desktop"],
         _ => vec![],
     };
     names
@@ -762,15 +779,19 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             "WORLD_DISCOVERY_REQUIRED: PRODUCT.md exists but no DESIGN.md or incumbent visual implementation was found. For a new build or redesign, load reference/new-work.md and establish the visual world with the human or structured simulated user before developing the task concept. Scoped fixes to existing code do not need this flow.".to_string()
         });
     }
-    for (name, path, content) in load_native_platform_references(ctx.platform.as_deref(), &provider) {
-        parts.doc(format!("# NATIVE PLATFORM REFERENCE: {} (reference/{}.md)", name.to_uppercase(), name), &path, &content);
+    for (name, path, content) in load_native_platform_references(ctx.platform.as_deref(), ctx.toolkit.as_deref(), &provider) {
+        let kind = if name == crate::desktop::GPUI { "TOOLKIT" } else { "NATIVE PLATFORM" };
+        parts.doc(format!("# {} REFERENCE: {} (reference/{}.md)", kind, name.to_uppercase(), name), &path, &content);
+    }
+    if ctx.platform.as_deref() == Some("desktop") {
+        parts.push(desktop_toolkit_directive(ctx.toolkit.as_deref(), &provider));
     }
     append_image_tools_directive(&mut parts, &env);
     append_staleness_directive(&mut parts, &ctx, &options, &cwd, &env);
     if ctx.platform.is_none() {
         if let Some(raw) = extract_section_value(ctx.product.as_deref(), "Platform") {
             if !raw.is_empty() {
-                parts.push(format!("WARNING: PRODUCT.md's `## Platform` value `{}` is not recognized; treating the project as `web`. Valid values are `web`, `ios`, `android`, or `adaptive` (cross-platform, ships both). If this project is native, fix the field (name the design language the app renders, not the toolchain) and surface it to the user.", raw));
+                parts.push(format!("WARNING: PRODUCT.md's `## Platform` value `{}` is not recognized; treating the project as `web`. Valid values are `web`, `ios`, `android`, `adaptive` (cross-platform, ships both), or `desktop`. If this project is native, fix the field (name the design language the app renders, not the toolchain) and surface it to the user.", raw));
             }
         }
     }
@@ -1091,6 +1112,48 @@ mod user_scope_hook_tests {
     }
 
     #[test]
+    fn desktop_hooks_follow_the_toolkit() {
+        let fixture = UserHookFixture::new("codex");
+        fixture.put("home/.codex/hooks.json", CODEX_HOOK);
+        fixture.put("project/PRODUCT.md", "# Product
+
+## Platform
+desktop
+");
+        let ctx = load_context(&fixture.project, &TargetOptions::default(), &fixture.env);
+        assert_eq!(ctx.platform.as_deref(), Some("desktop"));
+        assert_eq!(ctx.toolkit, None);
+        assert_eq!(fixture.mode(), "none", "unknown desktop toolkit");
+        fixture.put("project/Cargo.toml", "[dependencies]
+gpui = \"0.2\"
+");
+        let ctx = load_context(&fixture.project, &TargetOptions::default(), &fixture.env);
+        assert_eq!(ctx.toolkit.as_deref(), Some("gpui"));
+        assert_ne!(fixture.mode(), "none", "gpui keeps the hook");
+    }
+
+    #[test]
+    fn desktop_loads_desktop_and_gpui_references() {
+        let provider = Provider {
+            id: "claude-code".to_string(),
+            command_prefix: "/".to_string(),
+            command: "/impeccable".to_string(),
+            skill_dir: Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../../skill").to_string()),
+            self_cmd: "impeccable".to_string(),
+            self_raw: "impeccable".to_string(),
+        };
+        let names = |toolkit| {
+            super::load_native_platform_references(Some("desktop"), toolkit, &provider)
+                .into_iter()
+                .map(|(n, _, _)| n)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(Some("gpui")), vec!["desktop", "gpui"]);
+        assert_eq!(names(Some("web")), vec!["desktop"]);
+        assert_eq!(names(None), vec!["desktop"]);
+    }
+
+    #[test]
     fn project_hooks_still_supply_coverage_with_missing_custom_home() {
         let mut fixture = UserHookFixture::new("codex");
         fixture.put("project/.codex/hooks.json", CODEX_HOOK);
@@ -1204,6 +1267,7 @@ mod user_scope_hook_tests {
             surface_brief_candidates: vec![],
             has_visual_implementation: false,
             platform: None,
+            toolkit: None,
             project_root: project.clone(),
             repo_root: project.clone(),
             is_monorepo: false,

@@ -20,7 +20,7 @@ Before asking, scan enough to avoid making the user repeat known facts: product 
 
 Treat repository evidence as a hypothesis, not user approval. Note visual maturity without documenting, extending, or replacing the world.
 
-Form a platform hypothesis: `web`, `ios`, `android`, or `adaptive` (one product that genuinely adapts its design language per OS). Mobile web remains `web`; a native wrapper around a website does not make its design language native.
+Form a platform hypothesis: `web`, `ios`, `android`, `adaptive` (one product that genuinely adapts its design language per OS), or `desktop` (a macOS, Windows, or Linux app: GPUI, Electron, Tauri, Qt, WinUI). Mobile web remains `web`; a native wrapper around a website does not make its design language native, but a website shipped as a desktop app in its own window is `desktop`.
 
 ## Step 3: Interview for product truth
 
@@ -97,11 +97,11 @@ web
 [Known user needs or required standard. Omit when no product-specific requirement was established.]
 ```
 
-Platform is the bare value `web`, `ios`, `android`, or `adaptive`. Preserve useful legacy headings. New files go at `PROJECT_ROOT/PRODUCT.md`; otherwise update the resolved file. Write it before any visual-world or surface-concept work.
+Platform is the bare value `web`, `ios`, `android`, `adaptive`, or `desktop`. Preserve useful legacy headings. New files go at `PROJECT_ROOT/PRODUCT.md`; otherwise update the resolved file. Write it before any visual-world or surface-concept work.
 
 Copy the `impeccable:product-schema` comment verbatim, including when you update an older file. It records which version of the product record this file follows, so later versions can tell a deliberately short record from one written before a section existed, and never propose an interview the user has already sat through. Update the number only when this reference's template changes it. Sections a later version retires are reported to you at boot as deprecated; delete them when the user agrees rather than carrying them forward.
 
-When the platform you just recorded is `ios`, `android`, or `adaptive`, load [ios.md](ios.md), [android.md](android.md), or both before any design work. On a project that had no PRODUCT.md, `impeccable context` could not know the platform and so never loaded them; init is the only place that learns the answer.
+When the platform you just recorded is `ios`, `android`, or `adaptive`, load [ios.md](ios.md), [android.md](android.md), or both before any design work; for `desktop`, load [desktop.md](desktop.md), plus [gpui.md](gpui.md) when the app is built with GPUI. On a project that had no PRODUCT.md, `impeccable context` could not know the platform and so never loaded them; init is the only place that learns the answer.
 
 ### Completion gate
 
@@ -115,7 +115,7 @@ Write the answer to `.impeccable/config.json` as `"buildPath": "comp"` or `"buil
 
 A value already recorded in `.impeccable/config.json` or the gitignored `.impeccable/config.local.json` is a confirmed answer: on a re-run, honor it in silence rather than asking again. This is a default, not a lock: the decision page renders a toggle whose flip binds a single session and is never written back. Without image generation there is no choice to record; code-first is the only path.
 
-Then configure live mode when useful: skip native or non-runnable projects and leave existing config untouched. Otherwise follow [live.md](live.md)'s first-time setup. Any CSP source edit still requires its stated consent.
+Then configure live mode when useful: skip native, desktop, or non-runnable projects and leave existing config untouched. Otherwise follow [live.md](live.md)'s first-time setup. Any CSP source edit still requires its stated consent.
 
 ## Step 6: Wrap up or resume
 

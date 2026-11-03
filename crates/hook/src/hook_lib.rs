@@ -38,6 +38,12 @@ pub const ALLOWED_EXTS: &[&str] = &[
     ".less", ".ts", ".js",
 ];
 
+/// A `.rs` file written against GPUI: scanned by the GPUI engine instead of
+/// being skipped for its extension.
+pub fn is_gpui_file(file_path: &str) -> bool {
+    impeccable_detect::file_system::is_gpui_file(file_path)
+}
+
 pub const ACK_EXTS: &[&str] = &[
     ".tsx", ".jsx", ".html", ".htm", ".vue", ".svelte", ".astro", ".css", ".scss", ".sass", ".less",
 ];
@@ -1615,7 +1621,7 @@ pub fn render_pending_ack(rt: &Runtime, file_path: &str, known: &[String], cwd: 
 /// JS: shouldEmitAckForFile(filePath, config)
 pub fn should_emit_ack_for_file(file_path: &str, config: &HookConfig) -> bool {
     let ext = js::to_lower_case(&jsp::extname(file_path));
-    if ACK_EXTS.contains(&ext.as_str()) {
+    if ACK_EXTS.contains(&ext.as_str()) || impeccable_gpui::is_rust_path(file_path) {
         return true;
     }
     match_configured_extension(file_path, &config.extensions)
@@ -1706,6 +1712,9 @@ pub fn detector_detect_text(
     file_path: &str,
     scan: &HookScanOptions,
 ) -> Vec<Finding> {
+    if impeccable_gpui::is_rust_path(file_path) {
+        return impeccable_gpui::detect_gpui(content, file_path, true);
+    }
     let opts = TextOptions {
         profile: None,
         design_system: scan.design_system.as_deref(),

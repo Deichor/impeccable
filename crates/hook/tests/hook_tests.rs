@@ -3672,3 +3672,23 @@ fn expiry_removes_only_old_session_dirs_of_ours() {
     assert!(t.exists(&format!("outside/{OLD_CLAIM}")));
     assert!(t.exists("home/.impeccable/hook-sessions/keep-me/x"));
 }
+
+#[test]
+fn run_hook_scans_gpui_rust_and_skips_other_rust() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    t.write("Cargo.toml", "[package]\nname = \"app\"\n\n[dependencies]\ngpui = \"0.2\"\n");
+    t.write("PRODUCT.md", "# P\n\n## Platform\ndesktop\n");
+    let view = t.write(
+        "src/view.rs",
+        "use gpui::*;\nfn card() -> impl IntoElement {\n    div().rounded_lg().bg(white()).border_l_4().border_color(rgb(0x7c3aed))\n}\n",
+    );
+    let plain = t.write("src/math.rs", "pub fn add(a: u32, b: u32) -> u32 { a + b }\n");
+    let gh = rt_with(&cwd, env(&[("IMPECCABLE_HOOK_HARNESS", "github")]));
+    let res = hook::run_hook(&gh, &edit_event(&cwd, &view, "g1"));
+    assert!(res.stdout.contains("[side-tab]"), "{}", res.stdout);
+    assert_ne!(audit_str(&res.audit, "skipped"), Some("native-platform"));
+    let res = hook::run_hook(&gh, &edit_event(&cwd, &plain, "g2"));
+    assert_eq!(audit_str(&res.audit, "skipped"), Some("extension"));
+    assert!(res.stdout.is_empty() || !res.stdout.contains("Design hook"), "{}", res.stdout);
+}

@@ -652,6 +652,7 @@ version = "0.1.18"
 dependencies = [
  "impeccable-common",
  "impeccable-core",
+ "impeccable-gpui",
  "once_cell",
  "regex",
  "serde",
@@ -672,6 +673,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "impeccable-gpui"
+version = "0.1.18"
+dependencies = [
+ "impeccable-core",
+ "once_cell",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "impeccable-hook"
 version = "0.1.18"
 dependencies = [
@@ -680,6 +691,7 @@ dependencies = [
  "impeccable-context",
  "impeccable-core",
  "impeccable-detect",
+ "impeccable-gpui",
  "libc",
  "once_cell",
  "regex",

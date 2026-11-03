@@ -9,6 +9,7 @@ Use motion to explain state, relationship, and hierarchy, or to create one autho
 - **Persuade + Experience:** motion may carry the voice. Prefer one rehearsed focal sequence to repeated section reveals.
 - **Operate + Read:** motion serves feedback, state, and continuity. Keep routine transitions fast and do not make users wait through page-load choreography.
 - **Native (`ios` / `android` / `adaptive`):** follow the Motion section of [ios.md](ios.md) or [android.md](android.md), including the platform's Reduce Motion behavior. Do not apply the web tooling below.
+- **Desktop (`desktop`):** follow the Motion section of [desktop.md](desktop.md), and of [gpui.md](gpui.md) on GPUI. On a web shell (Electron, Tauri) the web tooling below applies inside those limits.
 
 ## Find the job
 

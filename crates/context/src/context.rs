@@ -89,6 +89,8 @@ pub struct Ctx {
     pub surface_brief_candidates: Vec<BriefSummary>,
     pub has_visual_implementation: bool,
     pub platform: Option<String>,
+    /// The `desktop` platform's toolkit (`gpui`, `web`), else `None`.
+    pub toolkit: Option<String>,
     pub project_root: String,
     pub repo_root: String,
     pub is_monorepo: bool,
@@ -105,6 +107,10 @@ pub fn load_context(cwd: &str, options: &TargetOptions, env: &Env) -> Ctx {
     let product = resolved.product_path.as_deref().and_then(safe_read);
     let design = resolved.design_path.as_deref().and_then(safe_read);
     let platform = extract_platform(product.as_deref());
+    let toolkit = (platform.as_deref() == Some("desktop"))
+        .then(|| crate::desktop::desktop_toolkit(&resolved.project_root, &resolved.repo_root))
+        .flatten()
+        .map(str::to_string);
     let target = if has_target_option(options) { options.target_path.as_deref() } else { None };
     let sr = resolve_surface_brief(&resolved.project_root, target);
     let brief = sr.brief.clone();
@@ -132,6 +138,7 @@ pub fn load_context(cwd: &str, options: &TargetOptions, env: &Env) -> Ctx {
             .collect(),
         has_visual_implementation: has_visual_implementation(&resolved.project_root),
         platform,
+        toolkit,
         project_root: resolved.project_root,
         repo_root: resolved.repo_root,
         is_monorepo: resolved.is_monorepo,
@@ -1244,7 +1251,7 @@ pub fn extract_platform(product: Option<&str>) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    if matches!(value.as_str(), "web" | "ios" | "android" | "adaptive") {
+    if matches!(value.as_str(), "web" | "ios" | "android" | "adaptive" | "desktop") {
         return Some(value);
     }
     let tokens: Vec<&str> = value
@@ -1568,5 +1575,17 @@ mod ui_target_tests {
         let (cands, skipped) = discover_ui_target_candidates(&t.root(), &env());
         assert_eq!(paths(&cands), ["packages/core", "packages/tsconfig"]);
         assert_eq!(skipped, 0);
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::extract_platform;
+
+    #[test]
+    fn desktop_is_a_platform_value() {
+        assert_eq!(extract_platform(Some("# P\n\n## Platform\ndesktop\n")).as_deref(), Some("desktop"));
+        assert_eq!(extract_platform(Some("# P\n\n## Platform\nDesktop\n")).as_deref(), Some("desktop"));
+        assert_eq!(extract_platform(Some("# P\n\n## Platform\ngpui\n")), None);
     }
 }

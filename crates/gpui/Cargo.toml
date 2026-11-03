@@ -1,0 +1,14 @@
+[package]
+name = "impeccable-gpui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# Source rules for GPUI (Rust) UI code: the `.rs` engine behind the design
+# hook and `impeccable detect` for `desktop` projects built with GPUI.
+
+[dependencies]
+impeccable-core = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+serde_json = { workspace = true }

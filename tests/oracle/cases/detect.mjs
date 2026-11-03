@@ -221,6 +221,8 @@ function Thumb({ url }: { url?: string }) {
 
     // Project config, DESIGN.md, inline ignores (detect-config workspace)
     { id: 'detect-config-page-json', verb: 'detect', workspace: 'detect-config', args: ['--json', 'src/page.html'] },
+    { id: 'detect-gpui-dir-json', verb: 'detect', workspace: 'detect-gpui', args: ['--json', '.'] },
+    { id: 'detect-gpui-file-text', verb: 'detect', workspace: 'detect-gpui', args: ['src/ui/card.rs'] },
     { id: 'detect-config-page-text', verb: 'detect', workspace: 'detect-config', args: ['src/page.html'] },
     { id: 'detect-config-page-no-config', verb: 'detect', workspace: 'detect-config', args: ['--no-config', '--json', 'src/page.html'] },
     { id: 'detect-config-page-no-design-system', verb: 'detect', workspace: 'detect-config', args: ['--no-design-system', '--json', 'src/page.html'] },

@@ -10,6 +10,7 @@ impeccable-common = { workspace = true }
 impeccable-comp-verbs = { workspace = true }
 impeccable-core = { workspace = true }
 impeccable-detect = { workspace = true }
+impeccable-gpui = { workspace = true }
 impeccable-context = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }

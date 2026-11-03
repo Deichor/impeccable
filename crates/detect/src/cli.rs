@@ -380,6 +380,9 @@ impl<'a> Ctx<'a> {
                 }));
             }
         };
+        if impeccable_gpui::is_rust_path(file_path) {
+            return Ok(impeccable_gpui::detect_gpui(&content, file_path, options.inline_ignores));
+        }
         self.regex_only_files += 1;
         self.regex_only_exts.insert(ext_from_file_path(file_path));
         let tokens = may_need_tokens(&content).then(|| self.tokens.for_file(file_path));

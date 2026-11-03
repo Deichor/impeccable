@@ -329,6 +329,9 @@ pub fn gather_signals(cwd: &str, env: &Env) -> Value {
     setup.insert("designPath".into(), opt_string(&ctx.design_path));
     setup.insert("hasCode".into(), Value::Bool(has_code(cwd)));
     setup.insert("platform".into(), opt_string(&extract_platform(ctx.product.as_deref())));
+    if ctx.platform.as_deref() == Some("desktop") {
+        setup.insert("toolkit".into(), opt_string(&ctx.toolkit));
+    }
     let mut critique = Map::new();
     critique.insert("latest".into(), latest_critique(cwd, env));
     let dev = dev_server_signals();

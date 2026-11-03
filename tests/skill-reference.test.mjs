@@ -162,7 +162,7 @@ describe('skill reference authoring contracts', () => {
   });
 
   it('keeps audit score-table dimensions aligned with their numbered sections', () => {
-    for (const filename of ['audit.md', 'audit.native.md']) {
+    for (const filename of ['audit.md', 'audit.native.md', 'audit.desktop.md']) {
       const audit = readFileSync(join(ROOT, `skill/reference/${filename}`), 'utf-8').replace(/\r\n?/g, '\n');
       const sections = [...audit.matchAll(/^### ([1-5])\. (.+?)(?: \([^\n]+\))?$/gm)].map((match) => [
         match[1],

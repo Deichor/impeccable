@@ -183,7 +183,7 @@ pub fn check_native_platform_evidence(
         }
     }
     if evidence.is_empty() {
-        return vec![];
+        return check_desktop_platform_evidence(project_root, product, product_path);
     }
     let mut platforms: Vec<&str> = Vec::new();
     for e in &evidence {
@@ -213,6 +213,29 @@ pub fn check_native_platform_evidence(
             "Ask the user whether `## Platform` should be `{}`. If it should, write the value and load the matching native reference before designing.",
             suggested
         ),
+    )]
+}
+
+/// A GPUI dependency in the root Cargo manifest under a web (or missing)
+/// platform: desktop guidance and the GPUI detector are not loading.
+fn check_desktop_platform_evidence(project_root: &str, product: Option<&str>, product_path: Option<&str>) -> Vec<Finding> {
+    let uses_gpui = crate::util::safe_read(&jsp::join(&[project_root, "Cargo.toml"]))
+        .is_some_and(|m| crate::desktop::manifest_uses_gpui(&m));
+    if !uses_gpui {
+        return vec![];
+    }
+    let declared = if product.map(|p| !p.is_empty()).unwrap_or(false) {
+        "PRODUCT.md resolves to web"
+    } else {
+        "no PRODUCT.md declares a platform, so the project resolves to web"
+    };
+    vec![finding(
+        "platform-desktop-evidence",
+        "PRODUCT.md",
+        product_path.map(|s| s.to_string()),
+        "mention",
+        format!("{declared}, but Cargo.toml depends on GPUI. Web guidance is being applied to a desktop app, and the desktop and GPUI references never load."),
+        "Ask the user whether `## Platform` should be `desktop`. If it should, write the value and rerun context before designing.".to_string(),
     )]
 }
 

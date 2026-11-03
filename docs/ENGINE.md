@@ -31,6 +31,7 @@ crates/
   comp         comp-fidelity pure libs (raster, png, metrics, fonts)
   comp-verbs   build-phase, comp-diff, comp-spec, font-match
   detect       `impeccable detect`: file walk, config, ignores, output, regex engine
+  gpui         the GPUI source engine: `.rs` builder chains, theme tokens, rules
   html         the static HTML engine: parser, cascade, static DOM, rule adapters
   browser      the URL engine: Chrome discovery, CDP, snapshot, visual pass
   foundation   JS-semantics helpers, color, findings, the rule registry, inline

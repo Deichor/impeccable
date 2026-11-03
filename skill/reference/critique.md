@@ -32,6 +32,8 @@ Resolve one stable target, run two independent assessments, synthesize a design 
 
 **Native platforms** (`ios` / `android` / `adaptive`): Assessment B does not apply, because `impeccable detect` and the browser overlay read only web markup. Run Assessment A alone in this context and skip both sub-agent gates below, the Codex permission question included: with no B there is nothing to isolate A from, so this is the complete native method and carries no degraded banner. Do not run `impeccable detect` on native source; its empty result reads as clean.
 
+**Desktop** (`desktop`): follow `DESKTOP_TOOLKIT` from the context output. On `gpui`, Assessment B is the CLI scan of the `.rs` sources plus screenshots of the app window (no browser overlay, no live server); keep the sub-agent gates. On `web`, use **Desktop apps** under Assessment B. On an unknown toolkit, run it like a native platform: Assessment A alone, `Method: design review only (detector not applicable, desktop toolkit)`.
+
 Delegate Assessment A and Assessment B to separate sub-agents. They must not see each other's output. Do not show findings to the user until synthesis.
 
 Sub-agent gate (all harnesses):
@@ -161,7 +163,7 @@ Be honest with scores. A 4 means genuinely excellent. Most real interfaces score
 
 **LLM assessment**: Your unanchored evaluation of design specificity. Cover overall coherence, structural sameness, category-interchangeable choices, and missed opportunities for product character.
 
-**Deterministic scan**: Summarize what the automated detector found, with counts and file locations. Note any additional issues the detector caught that you missed, and flag any false positives. On a native platform, write `not applicable (native platform)` instead.
+**Deterministic scan**: Summarize what the automated detector found, with counts and file locations. Note any additional issues the detector caught that you missed, and flag any false positives. On a native platform, write `not applicable (native platform)` instead; on a GPUI desktop app, report the `.rs` scan and say it reads source only.
 
 **Visual overlays** (if injection succeeded): Tell the user that overlays are now visible in the **[Human]** tab in their browser, highlighting the detected issues. Summarize what the console output reported. If browser visualization was attempted but injection failed, say that no reliable user-visible overlay is available and report the fallback signal instead.
 

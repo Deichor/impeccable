@@ -111,14 +111,25 @@ pub fn walk_dir_reporting(
         if is_dir && name.starts_with('.') && !HIDDEN_SOURCE_DIRS.contains(&name.as_str()) {
             continue;
         }
+        // Cargo build output next to its manifest.
+        if is_dir && name == "target" && std::path::Path::new(dir).join("Cargo.toml").is_file() {
+            continue;
+        }
         let full = jsp::join(&[dir, &name]);
         if is_dir {
             files.extend(walk_dir_reporting(&full, extra_exts, on_read_error));
-        } else if has_scannable_extension_with(&name, extra_exts) {
+        } else if has_scannable_extension_with(&name, extra_exts) || is_gpui_file(&full) {
             files.push(full);
         }
     }
     files
+}
+
+/// A `.rs` file written against GPUI, which the GPUI engine scans. Other
+/// Rust files are left out of the walk.
+pub fn is_gpui_file(file_path: &str) -> bool {
+    impeccable_gpui::is_rust_path(file_path)
+        && std::fs::read_to_string(file_path).is_ok_and(|c| impeccable_gpui::is_gpui_source(&c))
 }
 
 // ─── Import graph ────────────────────────────────────────────────────────────

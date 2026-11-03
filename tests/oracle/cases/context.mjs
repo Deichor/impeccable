@@ -254,6 +254,7 @@ const cases = [
   { id: 'context-target-followed-by-flag', verb: 'context', workspace: 'ctx-full', setup: sidecarNewer, args: ['--target', '--help'], env: env() },
   { id: 'context-native-ios', verb: 'context', workspace: 'ctx-native-ios', env: env(), files: IMPECCABLE_FILES },
   { id: 'context-adaptive', verb: 'context', workspace: 'ctx-adaptive', env: env(), files: IMPECCABLE_FILES },
+  { id: 'context-desktop-gpui', verb: 'context', workspace: 'ctx-desktop-gpui', env: env(), files: IMPECCABLE_FILES },
   { id: 'context-bad-platform', verb: 'context', workspace: 'ctx-bad-platform', env: env(), files: IMPECCABLE_FILES },
   { id: 'context-monorepo-root', verb: 'context', workspace: 'ctx-monorepo', env: env(), files: IMPECCABLE_FILES },
   { id: 'context-monorepo-target-a', verb: 'context', workspace: 'ctx-monorepo', args: ['--target', 'apps/a/src/App.tsx'], env: env(), files: IMPECCABLE_FILES },

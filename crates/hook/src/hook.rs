@@ -244,7 +244,7 @@ pub fn run_hook(rt: &Runtime, stdin: &str) -> RunResult {
                     .unwrap_or_else(|| ext.clone()),
             ),
         );
-        if !ALLOWED_EXTS.contains(&ext.as_str()) && configured.is_none() {
+        if !ALLOWED_EXTS.contains(&ext.as_str()) && configured.is_none() && !is_gpui_file(file_path) {
             last_skip = "extension";
             continue;
         }
@@ -829,7 +829,7 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
             }
             let ext = js::to_lower_case(&jsp::extname(file_path));
             let configured = match_configured_extension(file_path, &root_config.extensions);
-            if !ALLOWED_EXTS.contains(&ext.as_str()) && configured.is_none() {
+            if !ALLOWED_EXTS.contains(&ext.as_str()) && configured.is_none() && !is_gpui_file(file_path) {
                 continue;
             }
             if is_ignored_file(&rt.proc_cwd, file_path, root, &root_config.ignore_files) {

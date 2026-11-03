@@ -14,6 +14,7 @@ pub mod target_slug;
 pub mod surface_briefs;
 pub mod artifact_schema;
 pub mod context;
+pub mod desktop;
 pub mod staleness;
 pub mod staleness_notice;
 pub mod context_cli;
