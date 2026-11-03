@@ -27,12 +27,14 @@ The default build uses `gpui` 0.2 from crates.io. An app on Zed's `gpui-pre` sna
 # gpui-pre 0.3.11: captures, picking and live variants
 impeccable-gpui-probe = { git = "...", branch = "...", default-features = false, features = ["gpui-pre"] }
 
-# the same plus window snapshots; needs the patched GPUI at the workspace root
+# the same plus window snapshots and, on macOS, offscreen captures;
+# needs the patched GPUI at the workspace root
 impeccable-gpui-probe = { git = "...", branch = "...", default-features = false, features = ["snapshot"] }
 
 [patch.crates-io]
 gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
-# macOS: the Metal renderer with offscreen capture
+# macOS, `snapshot` only: the Metal renderer that captures offscreen.
+# Without these, captures fall back to ScreenCaptureKit.
 gpui-pre-macos = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 gpui-pre-apple = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 ```
@@ -61,9 +63,9 @@ Variants change the picked instance only, and only until the inspector closes; t
 
 ## Limits
 
-- Window capture: Win32 `PrintWindow` on Windows. On macOS, gpui-pre renders the last frame offscreen through GPUI's Metal renderer, which needs no permission and works for covered windows and a locked screen; gpui 0.2 has no such API, so it captures through ScreenCaptureKit (macOS 14 or later). It asks only for the app's own windows, which macOS 14.4 and later list without consent; if macOS still asks for Screen Recording, grant it to the terminal or editor that launched the app in System Settings > Privacy & Security > Screen & System Audio Recording. ScreenCaptureKit captures nothing while the screen is locked. Linux returns an error for now.
-- Point picking uses GPUI's own event dispatch on gpui-pre, where it works on every platform. On gpui 0.2 it posts native mouse events to the app's own queue: Win32 messages on Windows, `NSEvent`s on macOS (no Accessibility permission needed). Linux returns an error for now.
-- On macOS a covered window, or every window while the screen is locked, gets no display-link frames. On gpui-pre the probe draws a frame itself for captures, picks and snapshots; on gpui 0.2 picking needs the window on screen.
+- Window capture: Win32 `PrintWindow` on Windows. On macOS the `snapshot` build, with the fork's gpui-pre-macos and gpui-pre-apple patched in, renders the last frame offscreen through GPUI's Metal renderer: no permission, and covered windows and a locked screen capture too. Every other macOS build (gpui 0.2, plain `gpui-pre`) captures through ScreenCaptureKit, which needs macOS 14 and a window in front: macOS does not redraw a covered, minimized or other-Space window, so the probe refuses it rather than return a stale image, and it captures nothing while the screen is locked. It asks only for the app's own windows, which macOS 14.4 and later list without consent; if macOS still asks for Screen Recording, grant it to the terminal or editor that launched the app in System Settings > Privacy & Security > Screen & System Audio Recording. ScreenCaptureKit is loaded at run time, so a debug build still launches on older systems. Linux returns an error for now.
+- Point picking uses GPUI's own event dispatch on gpui-pre, where it works on every platform. On gpui 0.2 it posts native mouse events: Win32 messages on Windows, and on macOS `NSEvent`s handed to GPUI's view through the main run loop, which needs no Accessibility permission and does not focus the window. Linux returns an error for now.
+- On macOS a covered window, or every window while the screen is locked, gets no display-link frames. When no frame comes within 100 ms, the probe draws one itself before a capture, pick or snapshot.
 - Style variants change style only; structure goes through slots, which need one rebuild to add and one to remove.
 - The inspector exists in debug builds (or with GPUI's `inspector` feature).
 - Snapshot findings sit on the element that holds the text; text inside an element built in a library (gpui-component) points into that library.
