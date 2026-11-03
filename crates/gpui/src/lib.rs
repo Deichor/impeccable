@@ -15,7 +15,7 @@ mod tokens;
 mod value;
 
 pub use pack::register as register_rules;
-pub use snapshot::detect_snapshot;
+pub use snapshot::{detect_snapshot, detect_sweep};
 pub use tokens::Tokens;
 
 use impeccable_core::findings::{try_finding, Finding};

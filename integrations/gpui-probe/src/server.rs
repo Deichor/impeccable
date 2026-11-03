@@ -55,7 +55,7 @@ fn serve(mut stream: TcpStream, tx: mpsc::Sender<Request>) {
         return;
     }
     let reply = reply_rx
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(Duration::from_secs(180))
         .unwrap_or_else(|_| Reply::error(504, "the app did not answer in time"));
     let reason = match reply.status {
         200 => "OK",

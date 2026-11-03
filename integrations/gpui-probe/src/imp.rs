@@ -176,8 +176,27 @@ fn set_inspector(cx: &mut App, open: Option<bool>) -> bool {
 /// Move the pointer to a window point (logical pixels), then click, as a
 /// picking user would. The events go through the OS so GPUI treats them as
 /// real input.
+#[cfg(feature = "gpui-0-2")]
 fn pointer(cx: &mut App, x: f32, y: f32, click: bool) -> Result<(), String> {
     with_window(cx, |window, _| crate::capture::post_pointer(window, x, y, click)).ok_or("no window")?
+}
+
+/// gpui-pre dispatches input itself, so this works on every platform.
+#[cfg(feature = "gpui-pre")]
+fn pointer(cx: &mut App, x: f32, y: f32, click: bool) -> Result<(), String> {
+    use gpui::{point, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    with_window(cx, |window, cx| {
+        let position = point(px(x), px(y));
+        window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, ..Default::default() }), cx);
+        if click {
+            let down = MouseDownEvent { button: MouseButton::Left, position, click_count: 1, ..Default::default() };
+            window.dispatch_event(PlatformInput::MouseDown(down), cx);
+            let up = MouseUpEvent { button: MouseButton::Left, position, click_count: 1, ..Default::default() };
+            window.dispatch_event(PlatformInput::MouseUp(up), cx);
+        }
+        window.refresh();
+    })
+    .ok_or_else(|| "no window".to_string())
 }
 
 fn with_window<R>(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) -> R) -> Option<R> {
@@ -476,6 +495,10 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
         },
         #[cfg(feature = "snapshot")]
         ("GET", "/snapshot") => snapshot(cx).await,
+        #[cfg(feature = "snapshot")]
+        ("POST", "/sweep") => sweep(cx, &body).await,
+        #[cfg(not(feature = "snapshot"))]
+        ("POST", "/sweep") => Reply::error(501, "this probe was built without the `snapshot` feature"),
         #[cfg(not(feature = "snapshot"))]
         ("GET", "/snapshot") => Reply::error(
             501,
@@ -611,17 +634,117 @@ fn set_variants(cx: &mut App, body: &Value) -> Reply {
 
 #[cfg(feature = "snapshot")]
 async fn snapshot(cx: &mut AsyncApp) -> Reply {
+    match take_snapshot(cx).await {
+        Ok(v) => Reply::json(200, &v),
+        Err(e) => Reply::error(504, &e),
+    }
+}
+
+#[cfg(feature = "snapshot")]
+async fn take_snapshot(cx: &mut AsyncApp) -> Result<Value, String> {
     let requested = cx.up(|cx| with_window(cx, |window, _| window.request_ui_snapshot()));
     if !matches!(requested, Ok(Some(()))) {
-        return Reply::error(500, "no window");
+        return Err("no window".into());
     }
     for _ in 0..150 {
         cx.background_executor().timer(Duration::from_millis(20)).await;
         if let Ok(Some(Some(snap))) = cx.up(|cx| with_window(cx, |window, _| window.take_ui_snapshot())) {
-            return Reply::json(200, &snapshot_json(&snap));
+            return Ok(snapshot_json(&snap));
         }
     }
-    Reply::error(504, "the window drew no frame in 3 seconds")
+    Err("the window drew no frame in 3 seconds".into())
+}
+
+/// Most elements a sweep visits, so one call stays bounded.
+#[cfg(feature = "snapshot")]
+const SWEEP_LIMIT: usize = 150;
+
+/// Elements whose look depends on hover, with a visible point to hover.
+#[cfg(feature = "snapshot")]
+fn hover_targets(base: &Value) -> Vec<(usize, f32, f32)> {
+    let nodes = base["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        let reacts = !n["states"]["hover"].is_null() || n["input"]["hoverListener"].as_bool().unwrap_or(false);
+        let r = |v: &Value| -> Option<[f32; 4]> {
+            let a = v.as_array()?;
+            Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32, a.get(3)?.as_f64()? as f32])
+        };
+        let (Some(b), Some(c)) = (r(&n["bounds"]), r(&n["clip"])) else { continue };
+        let (x0, y0) = (b[0].max(c[0]), b[1].max(c[1]));
+        let (x1, y1) = ((b[0] + b[2]).min(c[0] + c[2]), (b[1] + b[3]).min(c[1] + c[3]));
+        if !reacts || x1 - x0 < 2.0 || y1 - y0 < 2.0 {
+            continue;
+        }
+        let key = (n["source"].to_string(), (x0 as i32, y0 as i32, x1 as i32, y1 as i32));
+        if seen.insert(key) {
+            out.push((i, (x0 + x1) / 2.0, (y0 + y1) / 2.0));
+        }
+        if out.len() >= SWEEP_LIMIT {
+            break;
+        }
+    }
+    out
+}
+
+/// The source of the node that holds focus in a snapshot.
+#[cfg(feature = "snapshot")]
+fn focused_source(snap: &Value) -> Option<String> {
+    snap["nodes"].as_array()?.iter().rev().find(|n| n["input"]["focused"].as_bool() == Some(true)).map(|n| n["source"].to_string())
+}
+
+/// Hover each hover-reactive element and step focus through the window,
+/// snapshotting each state so the app's own handlers run.
+#[cfg(feature = "snapshot")]
+async fn sweep(cx: &mut AsyncApp, body: &Value) -> Reply {
+    let settle = Duration::from_millis(body["settleMs"].as_u64().unwrap_or(60));
+    let base = match take_snapshot(cx).await {
+        Ok(v) => v,
+        Err(e) => return Reply::error(504, &e),
+    };
+    let mut hovers = Vec::new();
+    if body["hover"].as_bool().unwrap_or(true) {
+        for (target, x, y) in hover_targets(&base) {
+            if let Ok(Err(e)) = cx.up(|cx| pointer(cx, x, y, false)) {
+                return Reply::error(500, &e);
+            }
+            cx.background_executor().timer(settle).await;
+            match take_snapshot(cx).await {
+                Ok(snap) => hovers.push(json!({ "target": target, "point": [x, y], "snapshot": snap })),
+                Err(e) => return Reply::error(504, &e),
+            }
+        }
+        let _ = cx.up(|cx| pointer(cx, -10.0, -10.0, false));
+    }
+
+    let mut focus_base = Value::Null;
+    let mut steps = Vec::new();
+    if body["focus"].as_bool().unwrap_or(true) {
+        let original = cx.up(|cx| with_window(cx, |window, cx| window.focused(cx))).ok().flatten().flatten();
+        let _ = cx.up(|cx| with_window(cx, |window, cx| window.blur(cx)));
+        cx.background_executor().timer(settle).await;
+        focus_base = take_snapshot(cx).await.unwrap_or(Value::Null);
+        let mut first: Option<String> = None;
+        for _ in 0..SWEEP_LIMIT {
+            let _ = cx.up(|cx| with_window(cx, |window, cx| window.focus_next(cx)));
+            cx.background_executor().timer(settle).await;
+            let Ok(snap) = take_snapshot(cx).await else { break };
+            let Some(src) = focused_source(&snap) else { break };
+            if first.as_ref() == Some(&src) {
+                break;
+            }
+            first.get_or_insert(src);
+            steps.push(snap);
+        }
+        let _ = cx.up(|cx| {
+            with_window(cx, |window, cx| match &original {
+                Some(handle) => handle.focus(window, cx),
+                None => window.blur(cx),
+            })
+        });
+    }
+    Reply::json(200, &json!({ "base": base, "hover": hovers, "focusBase": focus_base, "focus": steps }))
 }
 
 #[cfg(feature = "snapshot")]
@@ -668,8 +791,10 @@ fn snapshot_json(snap: &gpui::UiSnapshot) -> Value {
                 "input": {
                     "clickable": interaction.clickable,
                     "focusable": interaction.focusable,
+                    "tabStop": interaction.tab_stop,
                     "focused": interaction.focused,
                     "hovered": interaction.hovered,
+                    "hoverListener": interaction.hover_listener,
                     "tooltip": interaction.tooltip,
                     "tabIndex": interaction.tab_index,
                     "keyContext": interaction.key_context,
@@ -850,6 +975,21 @@ mod tests {
         assert_eq!(refinement.opacity, Some(0.5));
         let round = serde_json::to_value(&refinement).unwrap();
         assert_eq!(round["background"]["Color"]["solid"], "#ff0000ff");
+    }
+
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn hover_targets_take_visible_reactive_elements_once() {
+        let base = json!({ "nodes": [
+            { "source": "a:1:1", "bounds": [0, 0, 100, 40], "clip": [0, 0, 100, 40], "states": { "hover": { "opacity": 0.5 } }, "input": {} },
+            { "source": "a:1:1", "bounds": [0, 0, 100, 40], "clip": [0, 0, 100, 40], "states": { "hover": { "opacity": 0.5 } }, "input": {} },
+            { "source": "a:2:1", "bounds": [0, 50, 100, 40], "clip": [0, 0, 100, 60], "states": {}, "input": { "hoverListener": true } },
+            { "source": "a:3:1", "bounds": [0, 90, 100, 40], "clip": [0, 0, 100, 60], "states": { "hover": {} }, "input": {} },
+            { "source": "a:4:1", "bounds": [0, 0, 50, 20], "clip": [0, 0, 400, 400], "states": {}, "input": {} },
+        ]});
+        assert_eq!(hover_targets(&base), vec![(0, 50.0, 20.0), (2, 50.0, 55.0)]);
+        let snap = json!({ "nodes": [{ "source": "x", "input": { "focused": false } }, { "source": "y", "input": { "focused": true } }] });
+        assert_eq!(focused_source(&snap).as_deref(), Some("\"y\""));
     }
 
     #[cfg(feature = "snapshot")]

@@ -26,6 +26,9 @@ Talks to a running GPUI app built with impeccable-gpui-probe (debug builds).
   decision [--wait]              what the user accepted (ctrl-alt-enter in the app)
   slots                          structure variant points (impeccable_gpui_probe::slot)
   slot [--id <id>] [--index <n>] make a slot the keyboard target, optionally show arm n
+  sweep [--no-hover] [--no-focus] [--settle <ms>] [--out <file>] [--raw]
+                                 hover each hover-reactive element and step focus through
+                                 the window, checking what only those states show
   snapshot [--out <file>] [--raw]
                                  everything the window painted, checked for contrast,
                                  tiny text and cut-off text (probe built with `snapshot`)
@@ -206,6 +209,29 @@ fn dispatch(sub: &str, args: &[String], cwd: &str) -> Result<Value, String> {
             };
             post(port, "/slot", &json!({ "id": flag(args, "--id"), "index": index }))
         }
+        "sweep" => {
+            let settle = flag(args, "--settle").map(|v| v.parse::<u64>().map_err(|_| format!("invalid --settle {v}"))).transpose()?;
+            let body = json!({ "hover": !has(args, "--no-hover"), "focus": !has(args, "--no-focus"), "settleMs": settle });
+            let sweep = post(port, "/sweep", &body)?;
+            if let Some(out) = flag(args, "--out") {
+                let text = serde_json::to_string_pretty(&sweep).unwrap_or_default();
+                std::fs::write(jsp::resolve(cwd, &[out]), text).map_err(|e| format!("{out}: {e}"))?;
+            }
+            if has(args, "--raw") {
+                return Ok(sweep);
+            }
+            let order: Vec<Value> = sweep["focus"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|step| step["nodes"].as_array()?.iter().rev().find(|n| n["input"]["focused"] == true).map(|n| n["source"].clone()))
+                .collect();
+            Ok(json!({
+                "hovered": sweep["hover"].as_array().map_or(0, Vec::len),
+                "focusOrder": order,
+                "findings": impeccable_gpui::detect_sweep(&sweep),
+            }))
+        }
         "snapshot" => {
             let snap = get_json(port, "/snapshot")?;
             if let Some(out) = flag(args, "--out") {
@@ -349,6 +375,30 @@ mod tests {
         assert_eq!(seen[2].1, "/variants");
         assert_eq!(body(2)["variants"][0]["label"], "Quiet");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const SWEEP: &str = r##"{
+        "base": {"nodes":[{"kind":"element","parent":null,"source":"src\\ui.rs:10:5","bounds":[0,0,400,200],"clip":[0,0,400,200],"style":{"background":{"Color":{"tag":"Solid","solid":"#ffffffff"}}}},
+                          {"kind":"text","parent":0,"text":"Retry","fontSize":14,"bounds":[0,0,60,20],"clip":[0,0,400,200],"size":[60,20],"runs":[{"len":5,"color":"#18181bff"}]}]},
+        "hover": [{"target":0,"point":[30,10],"snapshot":{"nodes":[{"kind":"element","parent":null,"source":"src\\ui.rs:10:5","bounds":[0,0,400,200],"clip":[0,0,400,200],"style":{"background":{"Color":{"tag":"Solid","solid":"#ffffffff"}}}},
+                          {"kind":"text","parent":0,"text":"Retry","fontSize":14,"bounds":[0,0,60,20],"clip":[0,0,400,200],"size":[60,20],"runs":[{"len":5,"color":"#e4e4e7ff"}]}]}}],
+        "focusBase": null,
+        "focus": [{"nodes":[{"kind":"element","parent":null,"source":"src\\ui.rs:12:5","input":{"focused":true}}]}]
+    }"##;
+
+    #[test]
+    fn sweep_posts_the_states_and_reports_hover_only_findings() {
+        let (port, seen, handle) = fake_probe(1, |_, _, _| (200, SWEEP.to_string()));
+        let v = dispatch("sweep", &args(port, &["--no-focus", "--settle", "120"]), "/").unwrap();
+        handle.join().unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("POST", "/sweep"));
+        assert_eq!(serde_json::from_str::<Value>(&seen[0].2).unwrap(), json!({ "hover": true, "focus": false, "settleMs": 120 }));
+        assert_eq!(v["hovered"], 1);
+        assert_eq!(v["focusOrder"], json!(["src\\ui.rs:12:5"]));
+        let f = &v["findings"][0];
+        assert_eq!(f["antipattern"], "low-contrast");
+        assert!(f["snippet"].as_str().unwrap().ends_with("(while hovering src/ui.rs:10)"), "{f}");
     }
 
     #[test]

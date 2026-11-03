@@ -296,8 +296,11 @@ pub fn detect_snapshot(snapshot: &Value) -> Vec<Finding> {
 
             let b = rect(&v["bounds"]).unwrap_or_default();
             let clickable = flag(v, "clickable");
-            if clickable && !flag(v, "focusable") && v["input"]["tabIndex"].is_null() && !ancestors(&nodes, idx).any(|i| handles_keys(nodes[i].v)) {
+            let covered = ancestors(&nodes, idx).any(|i| handles_keys(nodes[i].v));
+            if clickable && !flag(v, "focusable") && v["input"]["tabIndex"].is_null() && !covered {
                 sink.push(UNREACHABLE_CONTROL, at.clone(), format!("clickable {:.0}x{:.0} box with no focus handle", b[2], b[3]));
+            } else if clickable && flag(v, "focusable") && v["input"]["tabStop"] == false && !covered {
+                sink.push(UNREACHABLE_CONTROL, at.clone(), "focus handle is not a tab stop, so Tab never reaches it (FocusHandle::tab_stop(true))".into());
             }
             let states = &v["states"];
             if clickable && flag(v, "focusable") && !flag(v, "keyContext") && states["focus"].is_null() && states["focusVisible"].is_null() {
@@ -437,6 +440,92 @@ pub fn detect_snapshot(snapshot: &Value) -> Vec<Finding> {
     }
     let mut out = sink.out;
     out.sort_by(|a, b| (&a.file, a.line).partial_cmp(&(&b.file, b.line)).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The painted look of a snapshot, without input facts, for comparing states.
+fn look(snapshot: &Value) -> Vec<Value> {
+    snapshot["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|n| {
+                    let mut n = n.clone();
+                    if let Some(o) = n.as_object_mut() {
+                        o.remove("input");
+                    }
+                    n
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn node_source(snapshot: &Value, index: usize) -> String {
+    snapshot["nodes"][index]["source"].as_str().map(|s| {
+        let mut parts = s.rsplitn(3, ':');
+        let _ = parts.next();
+        let line = parts.next().unwrap_or("0");
+        format!("{}:{line}", parts.next().unwrap_or("").replace('\\', "/"))
+    }).unwrap_or_else(|| "?".into())
+}
+
+/// Findings for a state sweep (`POST /sweep`): the resting snapshot, then
+/// what appears only while an element is hovered or focused. The app's own
+/// handlers ran for each state, so `.on_hover(..)` and focus logic count.
+pub fn detect_sweep(sweep: &Value) -> Vec<Finding> {
+    crate::pack::register();
+    let base = &sweep["base"];
+    let mut out = detect_snapshot(base);
+    let key = |f: &Finding| (f.antipattern.clone(), f.file.clone(), f.line as i64);
+    let mut seen: std::collections::HashSet<_> = out.iter().map(key).collect();
+
+    for h in sweep["hover"].as_array().into_iter().flatten() {
+        let target = h["target"].as_u64().map(|t| node_source(base, t as usize)).unwrap_or_default();
+        for mut f in detect_snapshot(&h["snapshot"]) {
+            if f.antipattern.starts_with("gpui/") || !seen.insert(key(&f)) {
+                continue;
+            }
+            f.snippet = format!("{} (while hovering {target})", f.snippet);
+            out.push(f);
+        }
+    }
+
+    let resting = look(&sweep["focusBase"]);
+    let mut shows_focus = std::collections::HashSet::new();
+    for step in sweep["focus"].as_array().into_iter().flatten() {
+        let nodes = nodes(step);
+        let Some(idx) = nodes.iter().rposition(|n| n.v["input"]["focused"].as_bool() == Some(true)) else { continue };
+        let at = source(&nodes, idx);
+        let changed = resting.is_empty() || look(step) != resting;
+        if changed {
+            if let Some(at) = &at {
+                shows_focus.insert((at.0.clone(), at.1 as i64));
+            }
+        } else {
+            const PROOF: &str = "taking focus changes nothing on screen (checked by moving focus)";
+            let mut sink = Sink::default();
+            sink.push(NO_FOCUS_STYLE, at.clone(), PROOF.into());
+            for f in sink.out {
+                if seen.insert(key(&f)) {
+                    out.push(f);
+                } else if let Some(known) = out.iter_mut().find(|o| key(o) == key(&f)) {
+                    known.snippet = PROOF.into();
+                }
+            }
+        }
+        for mut f in detect_snapshot(step) {
+            if f.antipattern.starts_with("gpui/") || !seen.insert(key(&f)) {
+                continue;
+            }
+            f.snippet = format!("{} (while focused)", f.snippet);
+            out.push(f);
+        }
+    }
+    // Focus that visibly lands somewhere wins over a missing `.focus(..)` call:
+    // the app may draw it another way.
+    out.retain(|f| !(f.antipattern == NO_FOCUS_STYLE && shows_focus.contains(&(f.file.clone(), f.line as i64)) && !f.snippet.starts_with("taking focus")));
     out
 }
 
@@ -629,6 +718,52 @@ mod tests {
         let f = found.iter().find(|f| f.antipattern == UNVIRTUALIZED_LIST).expect("long list");
         assert_eq!(f.line, 1.0);
         assert!(f.snippet.starts_with("60 children"), "{}", f.snippet);
+    }
+
+
+    #[test]
+    fn sweeps_report_what_only_hover_or_focus_shows() {
+        let base = json!({ "nodes": [
+            el(None, 1, json!({ "background": solid("#ffffffff") })),
+            txt(0, "Retry", "#18181bff", "IBM Plex Sans"),
+        ]});
+        let hovered = json!({ "nodes": [
+            el(None, 1, json!({ "background": solid("#ffffffff") })),
+            txt(0, "Retry", "#d4d4d8ff", "IBM Plex Sans"),
+        ]});
+        let mut focused_el = el(None, 1, json!({ "background": solid("#ffffffff") }));
+        focused_el["input"] = json!({ "focused": true, "focusable": true, "clickable": true });
+        let unchanged_focus = json!({ "nodes": [focused_el, txt(0, "Retry", "#18181bff", "IBM Plex Sans")] });
+        let sweep = json!({ "base": base.clone(), "hover": [{ "target": 0, "snapshot": hovered }], "focusBase": base, "focus": [unchanged_focus] });
+        let found = detect_sweep(&sweep);
+        let lc = found.iter().find(|f| f.antipattern == "low-contrast").expect("hover-only contrast");
+        assert!(lc.snippet.ends_with("(while hovering src/ui.rs:1)"), "{}", lc.snippet);
+        let nf = found.iter().find(|f| f.antipattern == NO_FOCUS_STYLE).expect("invisible focus");
+        assert!(nf.snippet.starts_with("taking focus changes nothing"), "{}", nf.snippet);
+    }
+
+    #[test]
+    fn visible_focus_clears_the_declared_style_finding() {
+        let mut button = el(None, 2, json!({}));
+        button["input"] = json!({ "clickable": true, "focusable": true, "keyContext": false });
+        button["states"] = json!({});
+        let base = json!({ "nodes": [button.clone()] });
+        let mut ringed = button.clone();
+        ringed["input"]["focused"] = json!(true);
+        ringed["style"] = json!({ "borderColor": "#2563ebff", "borderWidths": [2, 2, 2, 2] });
+        let sweep = json!({ "base": base.clone(), "hover": [], "focusBase": base, "focus": [{ "nodes": [ringed] }] });
+        assert!(detect_sweep(&sweep).iter().all(|f| f.antipattern != NO_FOCUS_STYLE));
+    }
+
+
+    #[test]
+    fn focus_handles_outside_the_tab_order_are_unreachable() {
+        let mut button = el(None, 3, json!({}));
+        button["input"] = json!({ "clickable": true, "focusable": true, "tabStop": false, "keyContext": false, "actions": 0 });
+        button["states"] = json!({ "focus": { "border_color": "#2563ebff" } });
+        let found = detect_snapshot(&json!({ "nodes": [button, txt(0, "Retry", "#18181bff", "IBM Plex Sans")] }));
+        let f = found.iter().find(|f| f.antipattern == UNREACHABLE_CONTROL).expect("not a tab stop");
+        assert!(f.snippet.contains("not a tab stop"), "{}", f.snippet);
     }
 
 }

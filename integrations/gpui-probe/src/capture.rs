@@ -87,7 +87,7 @@ fn window_rgba(window: &Window) -> Result<Rgba, String> {
 
 /// Post a pointer move (and, with `click`, a left click) at a point in
 /// logical pixels to the window's own message queue.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "gpui-0-2"))]
 pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -113,7 +113,7 @@ pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), 
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), feature = "gpui-0-2"))]
 pub fn post_pointer(_window: &Window, _x: f32, _y: f32, _click: bool) -> Result<(), String> {
     Err("picking by point is implemented for Windows only so far; pick in the window instead".into())
 }

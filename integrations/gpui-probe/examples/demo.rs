@@ -27,7 +27,10 @@ fn accent() -> Rgba {
     rgb(0x7c3aed)
 }
 
-struct Demo;
+struct Demo {
+    retry_hot: bool,
+    retry_focus: gpui::FocusHandle,
+}
 
 impl Render for Demo {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -82,6 +85,19 @@ impl Render for Demo {
             .child(item("Nightly", "Running for 14 minutes"))
             .child(
                 div()
+                    .id("retry")
+                    .track_focus(&self.retry_focus)
+                    .on_click(|_, _, _| {})
+                    .on_hover(cx.listener(|this, hot: &bool, _, cx| {
+                        this.retry_hot = *hot;
+                        cx.notify();
+                    }))
+                    .text_size(px(13.))
+                    .text_color(if self.retry_hot { card() } else { text() })
+                    .child("Retry nightly"),
+            )
+            .child(
+                div()
                     .w(px(160.))
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -107,7 +123,7 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(720.), px(480.)), cx);
         cx.open_window(
             WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
-            |_, cx| cx.new(|_| Demo),
+            |_, cx| cx.new(|cx| Demo { retry_hot: false, retry_focus: cx.focus_handle().tab_stop(true) }),
         )
         .unwrap();
         impeccable_gpui_probe::attach(
