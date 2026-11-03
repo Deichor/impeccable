@@ -57,7 +57,7 @@ try {
   await post('/inspector', { open: false });
   step('pick');
 
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' || process.platform === 'darwin') {
     const png = Buffer.from(await (await fetch(url('/capture'))).arrayBuffer());
     assert.equal(png.subarray(1, 4).toString(), 'PNG');
     step(`capture (${png.length} bytes)`);

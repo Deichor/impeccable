@@ -32,6 +32,9 @@ impeccable-gpui-probe = { git = "...", branch = "...", default-features = false,
 
 [patch.crates-io]
 gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+# macOS: the Metal renderer with offscreen capture
+gpui-pre-macos = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-apple = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 ```
 
 Run a debug build from the project root. The probe serves only this machine's own clients: requests from a browser page (any `Origin` header) or for a foreign `Host` get 403. The probe listens on 127.0.0.1 and writes its port to `.impeccable/gpui-probe.json`, which `impeccable gpui` reads. Add `.impeccable/gpui-probe.json` to `.gitignore`.
@@ -40,7 +43,7 @@ Run a debug build from the project root. The probe serves only this machine's ow
 
 | | Command | Notes |
 |---|---|---|
-| Window captures | `impeccable gpui capture --sizes 960x640,1440x900 --appearances dark,light` | One PNG per appearance × size, then restores the window size. Windows only for now. |
+| Window captures | `impeccable gpui capture --sizes 960x640,1440x900 --appearances dark,light` | One PNG per appearance × size, then restores the window size. Windows and macOS. |
 | Pick an element | `ctrl-alt-i` in the app, hover, click; or `impeccable gpui pick --x --y` | The panel shows the element's source line. |
 | Live variants | `impeccable gpui variants --file v.json` | Style patches applied to the picked element at once; no rebuild. |
 | Decide | `ctrl-alt-←/→` switch, `ctrl-alt-enter` accept, `ctrl-alt-backspace` original | `impeccable gpui decision --wait` returns the accepted patch and source line. |
@@ -58,7 +61,9 @@ Variants change the picked instance only, and only until the inspector closes; t
 
 ## Limits
 
-- Window capture uses Win32 `PrintWindow`; macOS and Linux return an error for it. Point picking uses posted Win32 messages on gpui 0.2 and GPUI's own event dispatch on gpui-pre, where it works on every platform.
+- Window capture: Win32 `PrintWindow` on Windows. On macOS, gpui-pre renders the last frame offscreen through GPUI's Metal renderer, which needs no permission and works for covered windows and a locked screen; gpui 0.2 has no such API, so it captures through ScreenCaptureKit (macOS 14 or later). It asks only for the app's own windows, which macOS 14.4 and later list without consent; if macOS still asks for Screen Recording, grant it to the terminal or editor that launched the app in System Settings > Privacy & Security > Screen & System Audio Recording. ScreenCaptureKit captures nothing while the screen is locked. Linux returns an error for now.
+- Point picking uses GPUI's own event dispatch on gpui-pre, where it works on every platform. On gpui 0.2 it posts native mouse events to the app's own queue: Win32 messages on Windows, `NSEvent`s on macOS (no Accessibility permission needed). Linux returns an error for now.
+- On macOS a covered window, or every window while the screen is locked, gets no display-link frames. On gpui-pre the probe draws a frame itself for captures, picks and snapshots; on gpui 0.2 picking needs the window on screen.
 - Style variants change style only; structure goes through slots, which need one rebuild to add and one to remove.
 - The inspector exists in debug builds (or with GPUI's `inspector` feature).
 - Snapshot findings sit on the element that holds the text; text inside an element built in a library (gpui-component) points into that library.
