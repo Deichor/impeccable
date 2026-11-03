@@ -199,6 +199,16 @@ fn pointer(cx: &mut App, x: f32, y: f32, click: bool) -> Result<(), String> {
     .ok_or_else(|| "no window".to_string())
 }
 
+/// Draw a frame now. A covered or locked window gets no display-link ticks
+/// on macOS, so the inspector and snapshots would wait forever; the next tick
+/// presents the frame, so the screen catches up.
+fn draw_now(window: &mut Window, cx: &mut App) {
+    #[cfg(feature = "gpui-0-2")]
+    window.draw(cx).clear();
+    #[cfg(feature = "gpui-pre")]
+    window.draw(cx).clear(cx);
+}
+
 fn with_window<R>(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) -> R) -> Option<R> {
     let handle = cx.active_window().or_else(|| cx.windows().first().copied())?;
     handle.update(cx, |_, window, cx| f(window, cx)).ok()
@@ -482,9 +492,11 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
                 cx.background_executor().timer(Duration::from_millis(150)).await;
                 let moved = cx.up(|cx| pointer(cx, x as f32, y as f32, false));
                 cx.background_executor().timer(Duration::from_millis(150)).await;
+                let _ = cx.up(|cx| with_window(cx, draw_now));
                 let clicked = cx.up(|cx| pointer(cx, x as f32, y as f32, true));
                 // The picked element records its state on the next frame.
                 cx.background_executor().timer(Duration::from_millis(250)).await;
+                let _ = cx.up(|cx| with_window(cx, draw_now));
                 match (moved, clicked) {
                     (Ok(Ok(())), Ok(Ok(()))) => cx.up(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
                     (Ok(Err(e)), _) | (_, Ok(Err(e))) => Reply::error(500, &e),
@@ -648,8 +660,11 @@ async fn take_snapshot(cx: &mut AsyncApp) -> Result<Value, String> {
     if !matches!(requested, Ok(Some(()))) {
         return Err("no window".into());
     }
-    for _ in 0..150 {
+    for i in 0..150 {
         cx.background_executor().timer(Duration::from_millis(20)).await;
+        if i == 10 {
+            let _ = cx.up(|cx| with_window(cx, draw_now));
+        }
         if let Ok(Some(Some(snap))) = cx.up(|cx| with_window(cx, |window, _| window.take_ui_snapshot())) {
             return Ok(snapshot_json(&snap));
         }
