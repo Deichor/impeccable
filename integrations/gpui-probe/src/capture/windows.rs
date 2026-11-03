@@ -1,34 +1,11 @@
-//! Window capture. GPUI draws through the GPU, so a plain screen grab of a
-//! covered or off-screen window comes back blank; on Windows `PrintWindow`
-//! with full-content rendering asks the compositor for the window itself.
+//! Windows: `PrintWindow` with full-content rendering asks the compositor for
+//! the window itself, and pointer input goes to the window's message queue.
 
 use gpui::Window;
 
-pub fn window_png(window: &Window) -> Result<Vec<u8>, String> {
-    let rgba = window_rgba(window)?;
-    encode_png(&rgba.pixels, rgba.width, rgba.height)
-}
+use super::Rgba;
 
-struct Rgba {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
-
-fn encode_png(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, width, height);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-        writer.write_image_data(pixels).map_err(|e| e.to_string())?;
-    }
-    Ok(out)
-}
-
-#[cfg(target_os = "windows")]
-fn window_rgba(window: &Window) -> Result<Rgba, String> {
+pub fn window_rgba(window: &Window) -> Result<Rgba, String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
@@ -87,7 +64,7 @@ fn window_rgba(window: &Window) -> Result<Rgba, String> {
 
 /// Post a pointer move (and, with `click`, a left click) at a point in
 /// logical pixels to the window's own message queue.
-#[cfg(all(target_os = "windows", feature = "gpui-0-2"))]
+#[cfg(feature = "gpui-0-2")]
 pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -111,14 +88,4 @@ pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), 
         }
     }
     Ok(())
-}
-
-#[cfg(all(not(target_os = "windows"), feature = "gpui-0-2"))]
-pub fn post_pointer(_window: &Window, _x: f32, _y: f32, _click: bool) -> Result<(), String> {
-    Err("picking by point is implemented for Windows only so far; pick in the window instead".into())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn window_rgba(_window: &Window) -> Result<Rgba, String> {
-    Err("window capture is implemented for Windows only so far; on macOS use `screencapture -l <window-id>`".into())
 }

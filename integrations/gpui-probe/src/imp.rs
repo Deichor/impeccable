@@ -459,7 +459,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
             None => Reply::error(400, "body needs dark: true|false"),
         },
         ("GET", "/capture") => {
-            let r = cx.up(|cx| with_window(cx, |window, _| crate::capture::window_png(window)));
+            let r = cx.up(|cx| with_window(cx, crate::capture::window_png));
             match r {
                 Ok(Some(Ok(png))) => Reply::png(png),
                 Ok(Some(Err(e))) => Reply::error(500, &e),
