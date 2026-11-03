@@ -67,8 +67,9 @@ fn port(args: &[String], cwd: &str) -> Result<u16, String> {
     Err("no running probe found: start the app's debug build (it writes .impeccable/gpui-probe.json) or pass --port".into())
 }
 
+/// The probe answers within 180 s or replies 504 itself.
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(40)).build()
+    ureq::AgentBuilder::new().timeout(Duration::from_secs(200)).build()
 }
 
 fn get(port: u16, path: &str) -> Result<ureq::Response, String> {
@@ -105,9 +106,27 @@ fn capture(port: u16, args: &[String], cwd: &str) -> Result<Value, String> {
     };
     let appearances: Vec<&str> = flag(args, "--appearances").map(|a| a.split(',').collect()).unwrap_or_default();
     let status = get_json(port, "/status")?;
-    let window = status["windows"].get(0).cloned().unwrap_or(Value::Null);
+    // The probe resizes the active window, else the first one.
+    let windows = status["windows"].as_array().cloned().unwrap_or_default();
+    let window = windows.iter().find(|w| w["active"] == true).or(windows.first()).cloned().unwrap_or(Value::Null);
     let original = (window["width"].as_f64(), window["height"].as_f64());
+    let original_dark = status["dark"].as_bool().or_else(|| window["osAppearance"].as_str().map(|a| a.contains("Dark")));
     let mut files = Vec::new();
+    let shot = capture_all(port, &out, &appearances, &sizes, &mut files);
+    if let (Some(w), Some(h)) = original {
+        if !sizes.is_empty() {
+            let _ = post(port, "/resize", &json!({ "width": w, "height": h }));
+        }
+    }
+    if let (Some(dark), false) = (original_dark, appearances.is_empty()) {
+        let _ = post(port, "/appearance", &json!({ "dark": dark }));
+    }
+    shot?;
+    Ok(json!({ "files": files }))
+}
+
+/// Every appearance x size capture; the caller restores the window after.
+fn capture_all(port: u16, out: &str, appearances: &[&str], sizes: &[(f64, f64)], files: &mut Vec<Value>) -> Result<(), String> {
     let appearance_list: Vec<Option<&str>> =
         if appearances.is_empty() { vec![None] } else { appearances.iter().map(|a| Some(*a)).collect() };
     let size_list: Vec<Option<(f64, f64)>> = if sizes.is_empty() { vec![None] } else { sizes.iter().map(|s| Some(*s)).collect() };
@@ -138,12 +157,7 @@ fn capture(port: u16, args: &[String], cwd: &str) -> Result<Value, String> {
             files.push(Value::String(path));
         }
     }
-    if let (Some(w), Some(h)) = original {
-        if !sizes.is_empty() {
-            let _ = post(port, "/resize", &json!({ "width": w, "height": h }));
-        }
-    }
-    Ok(json!({ "files": files }))
+    Ok(())
 }
 
 fn wait_for(port: u16, path: &str, ready: impl Fn(&Value) -> bool) -> Result<Value, String> {
@@ -399,6 +413,38 @@ mod tests {
         let f = &v["findings"][0];
         assert_eq!(f["antipattern"], "low-contrast");
         assert!(f["snippet"].as_str().unwrap().ends_with("(while hovering src/ui.rs:10)"), "{f}");
+    }
+
+    #[test]
+    fn capture_restores_size_and_appearance_even_when_a_shot_fails() {
+        let (port, seen, handle) = fake_probe(6, |_, path, _| match path {
+            "/status" => (200, r#"{"dark":null,"windows":[{"width":300,"height":200,"active":false,"osAppearance":"Light"},{"width":720,"height":480,"active":true,"osAppearance":"VibrantDark"}]}"#.into()),
+            "/capture" => (500, r#"{"error":"PrintWindow failed"}"#.into()),
+            _ => (200, "{}".into()),
+        });
+        let dir = std::env::temp_dir().join(format!("impeccable-gpui-capture-{}", std::process::id()));
+        let err = dispatch("capture", &args(port, &["--out", &dir.to_string_lossy(), "--sizes", "600x400", "--appearances", "light"]), "/").unwrap_err();
+        assert!(err.contains("PrintWindow failed"), "{err}");
+        handle.join().unwrap();
+        let seen = seen.lock().unwrap();
+        let calls: Vec<(String, String)> = seen.iter().map(|(_, p, b)| (p.clone(), b.clone())).collect();
+        let body = |i: usize| serde_json::from_str::<Value>(&calls[i].1).unwrap();
+        assert_eq!(calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["/status", "/appearance", "/resize", "/capture", "/resize", "/appearance"]);
+        // The active window's size and the OS appearance come back.
+        assert_eq!(body(4), json!({ "width": 720.0, "height": 480.0 }));
+        assert_eq!(body(5), json!({ "dark": true }));
+        drop(seen);
+        let (port, seen, handle) = fake_probe(4, |_, path, _| match path {
+            "/status" => (200, r#"{"dark":null,"windows":[{"width":720,"height":480,"active":true,"osAppearance":"VibrantDark"}]}"#.into()),
+            "/capture" => (200, "png".into()),
+            _ => (200, "{}".into()),
+        });
+        dispatch("capture", &args(port, &["--out", &dir.to_string_lossy(), "--appearances", "light"]), "/").unwrap();
+        handle.join().unwrap();
+        let seen = seen.lock().unwrap();
+        let last = seen.last().unwrap();
+        assert_eq!((last.1.as_str(), serde_json::from_str::<Value>(&last.2).unwrap()), ("/appearance", json!({ "dark": true })));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -381,6 +381,22 @@ pub fn is_native_platform(platform: Option<&str>) -> bool {
     matches!(platform, Some("ios" | "android" | "adaptive"))
 }
 
+/// Whether the design hook stays out of this project: native platforms, and
+/// desktop apps whose toolkit no detector covers (the same gate `context`
+/// prints as the hook mode).
+pub fn platform_skips_hook(rt: &Runtime, cwd: &str, platform: Option<&str>) -> bool {
+    if is_native_platform(platform) {
+        return true;
+    }
+    if platform != Some("desktop") {
+        return false;
+    }
+    let options = impeccable_context::target_args::TargetOptions::default();
+    let resolved = impeccable_context::context::resolve_context(cwd, &options, &rt.env);
+    let toolkit = impeccable_context::desktop::desktop_toolkit(&resolved.project_root, &resolved.repo_root);
+    !impeccable_context::desktop::detector_applies(platform, toolkit)
+}
+
 // ── config ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]

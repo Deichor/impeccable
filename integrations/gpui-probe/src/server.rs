@@ -49,7 +49,13 @@ pub fn start(port: u16, tx: mpsc::Sender<Request>) -> std::io::Result<u16> {
 
 fn serve(mut stream: TcpStream, tx: mpsc::Sender<Request>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let Some((method, path, body)) = read_request(&stream) else { return };
+    let Some((method, path, body, host, origin)) = read_request(&stream) else { return };
+    let port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
+    if !trusted(host.as_deref(), origin.is_some(), port) {
+        let reply = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(reply);
+        return;
+    }
     let (reply_tx, reply_rx) = mpsc::channel();
     if tx.send(Request { method, path, body, reply: reply_tx }).is_err() {
         return;
@@ -75,7 +81,16 @@ fn serve(mut stream: TcpStream, tx: mpsc::Sender<Request>) {
     let _ = stream.write_all(&reply.body);
 }
 
-fn read_request(stream: &TcpStream) -> Option<(String, String, Vec<u8>)> {
+/// A browser page can reach 127.0.0.1 too. Its requests carry an `Origin`,
+/// and a DNS-rebound one a foreign `Host`; the CLI sends neither.
+fn trusted(host: Option<&str>, has_origin: bool, port: u16) -> bool {
+    let host_ok = host.is_some_and(|h| h == format!("127.0.0.1:{port}") || h == format!("localhost:{port}"));
+    host_ok && !has_origin
+}
+
+type Parsed = (String, String, Vec<u8>, Option<String>, Option<String>);
+
+fn read_request(stream: &TcpStream) -> Option<Parsed> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
@@ -83,6 +98,7 @@ fn read_request(stream: &TcpStream) -> Option<(String, String, Vec<u8>)> {
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
     let mut length = 0usize;
+    let (mut host, mut origin) = (None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header).ok()?;
@@ -93,6 +109,10 @@ fn read_request(stream: &TcpStream) -> Option<(String, String, Vec<u8>)> {
         if let Some((k, v)) = header.split_once(':') {
             if k.eq_ignore_ascii_case("content-length") {
                 length = v.trim().parse().ok()?;
+            } else if k.eq_ignore_ascii_case("host") {
+                host = Some(v.trim().to_string());
+            } else if k.eq_ignore_ascii_case("origin") {
+                origin = Some(v.trim().to_string());
             }
         }
     }
@@ -101,7 +121,7 @@ fn read_request(stream: &TcpStream) -> Option<(String, String, Vec<u8>)> {
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).ok()?;
-    Some((method, path, body))
+    Some((method, path, body, host, origin))
 }
 
 #[cfg(test)]
@@ -110,8 +130,15 @@ mod tests {
     use std::io::Read;
 
     fn exchange(raw: &[u8]) -> String {
+        let raw = raw.to_vec();
+        exchange_to(move |_| String::from_utf8(raw.clone()).unwrap())
+    }
+
+    fn exchange_to(raw: impl Fn(u16) -> String) -> String {
         let (tx, rx) = mpsc::channel::<Request>();
         let port = start(0, tx).unwrap();
+        let raw = raw(port);
+        let raw = raw.as_bytes();
         std::thread::spawn(move || {
             if let Ok(req) = rx.recv_timeout(Duration::from_secs(5)) {
                 let body = String::from_utf8_lossy(&req.body).to_string();
@@ -128,7 +155,7 @@ mod tests {
 
     #[test]
     fn requests_reach_the_app_and_replies_come_back() {
-        let out = exchange(b"POST /variants HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}");
+        let out = exchange_to(|port| format!("POST /variants HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 7\r\n\r\n{{\"a\":1}}"));
         assert!(out.starts_with("HTTP/1.1 201 "), "{out}");
         assert!(out.contains("Content-Type: application/json"));
         let body = out.split("\r\n\r\n").nth(1).unwrap();
@@ -137,8 +164,17 @@ mod tests {
     }
 
     #[test]
+    fn browser_pages_and_foreign_hosts_are_refused() {
+        let page = exchange_to(|port| format!("POST /resize HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nContent-Length: 2\r\n\r\n{{}}"));
+        assert!(page.starts_with("HTTP/1.1 403"), "{page}");
+        let rebound = exchange(b"GET /capture HTTP/1.1\r\nHost: evil.example:80\r\n\r\n");
+        assert!(rebound.starts_with("HTTP/1.1 403"), "{rebound}");
+        assert!(trusted(Some("localhost:4100"), false, 4100));
+    }
+
+    #[test]
     fn oversized_bodies_are_dropped() {
-        let raw = format!("POST /variants HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
-        assert_eq!(exchange(raw.as_bytes()), "");
+        let out = exchange_to(|port| format!("POST /variants HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1));
+        assert_eq!(out, "");
     }
 }

@@ -219,9 +219,9 @@ pub fn check_native_platform_evidence(
 /// A GPUI dependency in the root Cargo manifest under a web (or missing)
 /// platform: desktop guidance and the GPUI detector are not loading.
 fn check_desktop_platform_evidence(project_root: &str, product: Option<&str>, product_path: Option<&str>) -> Vec<Finding> {
-    let uses_gpui = crate::util::safe_read(&jsp::join(&[project_root, "Cargo.toml"]))
-        .is_some_and(|m| crate::desktop::manifest_uses_gpui(&m));
-    if !uses_gpui {
+    // Same lookup as the toolkit detection: the root manifest or a
+    // `crates/*` member.
+    if !crate::desktop::uses_gpui(project_root, project_root) {
         return vec![];
     }
     let declared = if product.map(|p| !p.is_empty()).unwrap_or(false) {
@@ -546,3 +546,21 @@ pub fn collect_boot_findings(ctx: &Ctx, cwd: &str, extras: &BootExtras) -> Vec<F
 }
 
 pub static _UNUSED: Lazy<()> = Lazy::new(|| ());
+
+#[cfg(test)]
+mod desktop_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn gpui_in_a_workspace_member_is_desktop_evidence() {
+        let root = std::env::temp_dir().join(format!("impeccable-desktop-evidence-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("crates/app")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n").unwrap();
+        std::fs::write(root.join("crates/app/Cargo.toml"), "[package]\nname = \"app\"\n\n[dependencies]\ngpui = { package = \"gpui-pre\", version = \"=0.3.11\" }\n").unwrap();
+        let path = root.to_string_lossy().to_string();
+        let found = check_native_platform_evidence(&path, None, Some("# P\n"), Some("PRODUCT.md"));
+        assert_eq!(found.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["platform-desktop-evidence"]);
+        assert!(check_native_platform_evidence(&path, Some("desktop"), Some("# P\n"), Some("PRODUCT.md")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

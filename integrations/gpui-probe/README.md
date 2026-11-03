@@ -34,7 +34,7 @@ impeccable-gpui-probe = { git = "...", branch = "...", default-features = false,
 gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 ```
 
-Run a debug build from the project root. The probe listens on 127.0.0.1 and writes its port to `.impeccable/gpui-probe.json`, which `impeccable gpui` reads. Add `.impeccable/gpui-probe.json` to `.gitignore`.
+Run a debug build from the project root. The probe serves only this machine's own clients: requests from a browser page (any `Origin` header) or for a foreign `Host` get 403. The probe listens on 127.0.0.1 and writes its port to `.impeccable/gpui-probe.json`, which `impeccable gpui` reads. Add `.impeccable/gpui-probe.json` to `.gitignore`.
 
 ## What it does
 
@@ -51,6 +51,10 @@ Run a debug build from the project root. The probe listens on 127.0.0.1 and writ
 A variant is a partial GPUI `StyleRefinement` in JSON, the same shape `impeccable gpui selection` prints for the picked element. `"background": "#rrggbbaa"` is accepted as a solid fill. Invalid patches are rejected before any is shown.
 
 Variants change the picked instance only, and only until the inspector closes; the agent writes the accepted one into the source line.
+
+## Smoke test
+
+`node scripts/smoke.mjs` starts `examples/demo` (build it with `--no-default-features --features snapshot` first) and drives every route on the real window: status, snapshot, slots, sweep, pick, capture, and the browser-origin refusal. With `IMPECCABLE_BIN` set it also checks the engine's `gpui snapshot` and `gpui sweep` findings. CI runs it on Windows.
 
 ## Limits
 

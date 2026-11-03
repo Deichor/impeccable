@@ -253,10 +253,21 @@ jobs:
         run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: integrations/gpui-probe
+          workspaces: |
+            . -> target
+            integrations/gpui-probe -> target
       - run: cargo test --lib
       - run: cargo test --lib --no-default-features --features snapshot
       - run: cargo build --release --example demo
+      # A real window: start the demo, drive every probe route, and check the
+      # engine's snapshot and sweep findings on it.
+      - run: cargo build --example demo --no-default-features --features snapshot
+      - name: Build the engine
+        working-directory: .
+        run: cargo build -p impeccable
+      - name: Window smoke test
+        shell: bash
+        run: IMPECCABLE_BIN="$GITHUB_WORKSPACE/target/debug/impeccable.exe" node scripts/smoke.mjs
 
   launcher-windows:
     runs-on: windows-latest

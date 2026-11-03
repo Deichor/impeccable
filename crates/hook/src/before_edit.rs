@@ -769,7 +769,10 @@ fn main_flow(rt: &Runtime, stdin: &str) -> Out {
                 .unwrap_or_else(|| ext_name.clone()),
         ),
     );
-    if !ALLOWED_EXTS.contains(&ext_name.as_str()) && configured.is_none() {
+    // GPUI views are `.rs`; whether this one is a view depends on the
+    // proposed content, checked once it is read.
+    let rust = impeccable_gpui::is_rust_path(&file_path);
+    if !ALLOWED_EXTS.contains(&ext_name.as_str()) && configured.is_none() && !rust {
         return skip(&audit, "extension");
     }
 
@@ -779,6 +782,9 @@ fn main_flow(rt: &Runtime, stdin: &str) -> Out {
     };
     if content.is_empty() {
         return skip(&audit, "no-proposed-content");
+    }
+    if rust && configured.is_none() && !impeccable_gpui::is_gpui_source(&content) {
+        return skip(&audit, "extension");
     }
     if content.len() as u64 > MAX_SCANNED_BYTES {
         return skip(&audit, "content-too-large");
@@ -798,7 +804,7 @@ fn main_flow(rt: &Runtime, stdin: &str) -> Out {
         return skip(&audit, "config-disabled");
     }
     let platform = resolve_project_platform(rt, &cwd);
-    if is_native_platform(platform.as_deref()) {
+    if platform_skips_hook(rt, &cwd, platform.as_deref()) {
         return allow(
             ext(
                 &audit,

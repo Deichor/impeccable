@@ -42,12 +42,17 @@ const MAX_FILES: usize = 4000;
 
 fn module_of(path: &str) -> String {
     let p = path.replace('\\', "/");
-    let file = p.rsplit('/').next().unwrap_or("");
+    let mut parts = p.rsplit('/');
+    let file = parts.next().unwrap_or("");
     let stem = file.trim_end_matches(".rs");
-    if stem == "mod" || stem == "lib" {
-        p.rsplit('/').nth(1).unwrap_or(stem).to_string()
-    } else {
-        stem.to_string()
+    let parent = parts.next().unwrap_or(stem);
+    match stem {
+        "mod" => parent.to_string(),
+        // A crate root is named after its crate: `crates/theme/src/lib.rs`
+        // is `theme::..`.
+        "lib" | "main" if parent == "src" => parts.next().unwrap_or(stem).replace('-', "_"),
+        "lib" | "main" => parent.to_string(),
+        _ => stem.to_string(),
     }
 }
 
@@ -281,15 +286,22 @@ fn close_brace(s: &str, open: usize) -> Option<usize> {
 
 /// The outermost directory above `file_path` that holds a `Cargo.toml`
 /// (the workspace root), stopping at a repository root.
+/// The Cargo workspace a file builds in: the nearest manifest with a
+/// `[workspace]` table that does not exclude the file's package, else the
+/// package itself. The walk stops at the repository root.
 fn workspace_root(file_path: &str) -> Option<std::path::PathBuf> {
     let mut dir = std::path::Path::new(file_path).parent()?.to_path_buf();
     if !dir.is_absolute() {
         dir = std::env::current_dir().ok()?.join(dir);
     }
-    let mut best = None;
+    let mut package: Option<std::path::PathBuf> = None;
     loop {
-        if dir.join("Cargo.toml").is_file() {
-            best = Some(dir.clone());
+        if let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) {
+            let here = package.get_or_insert_with(|| dir.clone()).clone();
+            if manifest.contains("[workspace]") {
+                let rel = here.strip_prefix(&dir).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                return Some(if excludes(&manifest, &rel) { here } else { dir });
+            }
         }
         if dir.join(".git").exists() {
             break;
@@ -299,7 +311,15 @@ fn workspace_root(file_path: &str) -> Option<std::path::PathBuf> {
             None => break,
         }
     }
-    best
+    package
+}
+
+/// Whether a workspace manifest's `exclude = [..]` covers a member path.
+fn excludes(manifest: &str, rel: &str) -> bool {
+    static RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"(?s)exclude\s*=\s*\[(.*?)\]").unwrap());
+    let Some(list) = RE.captures(manifest).and_then(|c| c.get(1)) else { return false };
+    !rel.is_empty()
+        && list.as_str().split(',').map(|e| e.trim().trim_matches('"').trim_end_matches('/')).any(|e| !e.is_empty() && (rel == e || rel.starts_with(&format!("{e}/"))))
 }
 
 fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -361,6 +381,23 @@ pub fn accent() -> Rgba { pick(0x9c86ff, 0x5e40dc) }
 pub fn brand() -> Rgba { rgb(0x7b5cfa) }
 pub fn tint(i: usize) -> Rgba { let x = i; rgb(0) }
 "#;
+
+    #[test]
+    fn crate_roots_are_named_after_their_crate() {
+        assert_eq!(module_of("crates/theme/src/lib.rs"), "theme");
+        assert_eq!(module_of("crates/my-ui/src/main.rs"), "my_ui");
+        assert_eq!(module_of("src/ui/mod.rs"), "ui");
+        assert_eq!(module_of("src/colors.rs"), "colors");
+    }
+
+    #[test]
+    fn excluded_packages_are_their_own_workspace() {
+        let m = "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"integrations/gpui-probe\", \"tools/x/\"]\n";
+        assert!(excludes(m, "integrations/gpui-probe"));
+        assert!(excludes(m, "tools/x/sub"));
+        assert!(!excludes(m, "crates/app"));
+        assert!(!excludes("[workspace]\n", "crates/app"));
+    }
 
     #[test]
     fn resolves_dark_light_tokens() {

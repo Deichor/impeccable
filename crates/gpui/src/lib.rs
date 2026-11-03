@@ -27,11 +27,18 @@ pub fn is_gpui_source(content: &str) -> bool {
     content.contains("gpui") || content.contains("IntoElement") || content.contains("RenderOnce")
 }
 
-/// Whether a path is a Rust source file the GPUI engine may read. Build
-/// output under `target/` never is.
+/// Whether a path is a Rust source file the GPUI engine may read. Cargo
+/// build output (`target/debug/..`, `target/<triple>/..`) never is; a
+/// directory merely named `target` still is.
 pub fn is_rust_path(file_path: &str) -> bool {
     let p = file_path.replace('\\', "/").to_ascii_lowercase();
-    p.ends_with(".rs") && !p.contains("/target/") && !p.starts_with("target/")
+    let parts: Vec<&str> = p.split('/').collect();
+    let build_output = parts.windows(2).any(|w| {
+        w[0] == "target"
+            && (matches!(w[1], "debug" | "release" | "doc" | "tmp" | "package" | "build" | "flycheck0" | "rust-analyzer")
+                || w[1].matches('-').count() >= 2)
+    });
+    p.ends_with(".rs") && !build_output
 }
 
 /// Scan one file, resolving theme tokens from the Cargo workspace it is in.
@@ -145,6 +152,9 @@ mod tests {
         assert!(is_rust_path("src/ui/view.rs"));
         assert!(!is_rust_path("C:\\app\\target\\debug\\build\\x\\out\\gen.rs"));
         assert!(!is_rust_path("src/app.tsx"));
+        assert!(!is_rust_path("target/x86_64-pc-windows-msvc/release/build/a/out/b.rs"));
+        assert!(is_rust_path("/home/u/target/myapp/src/view.rs"));
+        assert!(is_rust_path("src/target/view.rs"));
     }
 
     #[test]

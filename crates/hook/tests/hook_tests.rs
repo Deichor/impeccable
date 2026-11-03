@@ -3692,3 +3692,32 @@ fn run_hook_scans_gpui_rust_and_skips_other_rust() {
     assert_eq!(audit_str(&res.audit, "skipped"), Some("extension"));
     assert!(res.stdout.is_empty() || !res.stdout.contains("Design hook"), "{}", res.stdout);
 }
+
+#[test]
+fn run_hook_skips_desktop_projects_with_no_known_toolkit() {
+    // A desktop app the detector does not cover (here React Native for
+    // desktop: no GPUI, Electron or Tauri) gets design review only, like iOS.
+    let t = Tmp::new();
+    let cwd = t.path();
+    t.write("package.json", r#"{"dependencies":{"react-native-windows":"0.74"}}"#);
+    t.write("PRODUCT.md", "# P\n\n## Platform\ndesktop\n");
+    let card = t.write("src/card.css", SIDE_TAB_CSS);
+    let res = hook::run_hook(&rt(&cwd), &edit_event(&cwd, &card, "d1"));
+    assert_eq!(audit_str(&res.audit, "skipped"), Some("native-platform"));
+}
+
+#[test]
+fn before_edit_scans_gpui_views_and_skips_other_rust() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    t.write("Cargo.toml", "[package]\nname = \"app\"\n\n[dependencies]\ngpui = \"0.2\"\n");
+    t.write("PRODUCT.md", "# P\n\n## Platform\ndesktop\n");
+    let r = rt(&cwd);
+    let view = "use gpui::*;\nfn label() -> impl IntoElement {\n    div().text_size(px(9.)).child(\"Done\")\n}\n";
+    let (out, _) = hbe(&r, &cursor(&cwd, "Write", json!({"file_path": "src/view.rs", "content": view})));
+    assert!(out.starts_with("{\"permission\":\"deny\""), "{out}");
+    assert!(out.contains("tiny-text"), "{out}");
+    let math = "pub fn add(a: u32, b: u32) -> u32 { a + b }\n";
+    let (out, _) = hbe(&r, &cursor(&cwd, "Write", json!({"file_path": "src/math.rs", "content": math})));
+    assert_eq!(out, "{\"permission\":\"allow\"}");
+}

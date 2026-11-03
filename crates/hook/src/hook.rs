@@ -177,7 +177,7 @@ pub fn run_hook(rt: &Runtime, stdin: &str) -> RunResult {
     }
 
     let platform = resolve_project_platform(rt, &project_cwd);
-    if is_native_platform(platform.as_deref()) {
+    if platform_skips_hook(rt, &project_cwd, platform.as_deref()) {
         return result(
             &audit,
             vec![
@@ -729,7 +729,7 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
     let mut platform_memo: Option<Option<String>> = None;
     let native_skip = |audit: &Map<String, Value>, cwd: &str, platform_memo: &mut Option<Option<String>>| -> Option<RunResult> {
         let platform = platform_memo.get_or_insert_with(|| resolve_project_platform(rt, cwd)).clone();
-        is_native_platform(platform.as_deref()).then(|| result(
+        platform_skips_hook(rt, cwd, platform.as_deref()).then(|| result(
             audit,
             vec![
                 ("skipped", Value::from("native-platform")),

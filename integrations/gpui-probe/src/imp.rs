@@ -540,6 +540,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
 
 fn status(cx: &mut App) -> Reply {
     let shared = probe(cx);
+    let active = cx.active_window();
     let windows: Vec<Value> = cx
         .windows()
         .into_iter()
@@ -548,6 +549,7 @@ fn status(cx: &mut App) -> Reply {
                 let size = window.viewport_size();
                 json!({
                     "id": h.window_id().as_u64(),
+                    "active": active == Some(h),
                     "title": window.window_title(),
                     "width": f32::from(size.width),
                     "height": f32::from(size.height),
@@ -725,16 +727,24 @@ async fn sweep(cx: &mut AsyncApp, body: &Value) -> Reply {
         let _ = cx.up(|cx| with_window(cx, |window, cx| window.blur(cx)));
         cx.background_executor().timer(settle).await;
         focus_base = take_snapshot(cx).await.unwrap_or(Value::Null);
-        let mut first: Option<String> = None;
+        // Rows built by one helper share a source line, so the loop ends
+        // when the first focus handle comes round again, not its source.
+        let mut first: Option<gpui::FocusHandle> = None;
         for _ in 0..SWEEP_LIMIT {
-            let _ = cx.up(|cx| with_window(cx, |window, cx| window.focus_next(cx)));
-            cx.background_executor().timer(settle).await;
-            let Ok(snap) = take_snapshot(cx).await else { break };
-            let Some(src) = focused_source(&snap) else { break };
-            if first.as_ref() == Some(&src) {
+            let focused = cx.up(|cx| with_window(cx, |window, cx| {
+                window.focus_next(cx);
+                window.focused(cx)
+            }));
+            let Ok(Some(Some(handle))) = focused else { break };
+            if first.as_ref() == Some(&handle) {
                 break;
             }
-            first.get_or_insert(src);
+            first.get_or_insert(handle);
+            cx.background_executor().timer(settle).await;
+            let Ok(snap) = take_snapshot(cx).await else { break };
+            if focused_source(&snap).is_none() {
+                break;
+            }
             steps.push(snap);
         }
         let _ = cx.up(|cx| {

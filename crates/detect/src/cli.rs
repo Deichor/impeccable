@@ -381,7 +381,17 @@ impl<'a> Ctx<'a> {
             }
         };
         if impeccable_gpui::is_rust_path(file_path) {
-            return Ok(impeccable_gpui::detect_gpui(&content, file_path, options.inline_ignores));
+            // The same post-passes as detect_text: a declared purple brand,
+            // the rule pack, then inline ignores.
+            let mut found = impeccable_gpui::detect_gpui(&content, file_path, false);
+            crate::design_system::drop_declared_purple_findings(&mut found, options.design_system.as_deref());
+            if let Some(pack) = options.rule_pack {
+                found.extend(pack.check_text(&content, file_path, ".rs"));
+            }
+            if options.inline_ignores {
+                found = impeccable_core::inline_ignores::apply_inline_ignores(found, Some(&content));
+            }
+            return Ok(found);
         }
         self.regex_only_files += 1;
         self.regex_only_exts.insert(ext_from_file_path(file_path));

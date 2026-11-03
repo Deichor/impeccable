@@ -13,7 +13,7 @@ pub const WEB: &str = "web";
 
 /// A `gpui` (or `gpui-component`) dependency line in a Cargo manifest.
 static RE_GPUI_DEP: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?m)^\s*(?:gpui|gpui[-_]component)\s*(?:=|\.workspace)"#).unwrap());
+    Lazy::new(|| Regex::new(r#"(?m)^\s*(?:gpui|gpui[-_](?:component|kit|pre))\s*(?:=|\.workspace)"#).unwrap());
 
 const WEB_SHELL_DEPENDENCIES: [&str; 5] = ["electron", "@tauri-apps/api", "@tauri-apps/cli", "nw", "@electron-forge/cli"];
 
@@ -92,6 +92,8 @@ mod tests {
         assert!(manifest_uses_gpui("[dependencies]\ngpui.workspace = true\n"));
         assert!(manifest_uses_gpui("[workspace.dependencies]\n  gpui = { path = \"crates/gpui\" }\n"));
         assert!(manifest_uses_gpui("gpui-component = \"0.1\"\n"));
+        assert!(manifest_uses_gpui("gpui-pre = \"0.3.11\"\n"));
+        assert!(manifest_uses_gpui("gpui-kit = { version = \"0.9\" }\n"));
         assert!(!manifest_uses_gpui("[dependencies]\ngpui_macros_helper = \"1\"\nnot-gpui = \"1\"\n"));
     }
 
