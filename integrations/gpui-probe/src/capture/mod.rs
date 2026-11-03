@@ -1,19 +1,24 @@
 //! Window capture. GPUI draws through the GPU, so a plain screen grab of a
 //! covered or off-screen window comes back blank. Each platform asks for the
 //! window itself: the compositor on Windows, and on macOS GPUI's own renderer
-//! (gpui-pre with the fork, `snapshot`) or else ScreenCaptureKit.
+//! (gpui-pre with the fork, `snapshot`) or else ScreenCaptureKit. Linux takes
+//! the same renderer route, else the X server.
 
 use std::sync::mpsc;
 
 use gpui::Window;
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(all(target_os = "macos", feature = "snapshot"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "snapshot"))]
 mod render;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(all(target_os = "linux", feature = "gpui-0-2"))]
+pub use linux::post_pointer;
 #[cfg(all(target_os = "macos", feature = "gpui-0-2"))]
 pub use macos::post_pointer;
 #[cfg(all(target_os = "windows", feature = "gpui-0-2"))]
@@ -44,10 +49,12 @@ pub fn start(window: &Window) -> Result<Shot, String> {
     // Without the fork's macOS renderer, render_to_image is not implemented.
     #[cfg(target_os = "macos")]
     return macos::start(window);
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    return Ok(Shot::Done(linux::window_rgba(window)));
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         let _ = window;
-        Err("window capture is implemented for Windows and macOS only so far".into())
+        Err("window capture is implemented for Windows, macOS and Linux only so far".into())
     }
 }
 
@@ -84,10 +91,10 @@ fn unpremultiply(pixels: &mut [u8]) {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 #[cfg(feature = "gpui-0-2")]
 pub fn post_pointer(_window: &Window, _x: f32, _y: f32, _click: bool) -> Result<(), String> {
-    Err("picking by point is implemented for Windows and macOS only so far; pick in the window instead".into())
+    Err("picking by point is implemented for Windows, macOS and Linux only so far; pick in the window instead".into())
 }
 
 #[cfg(test)]

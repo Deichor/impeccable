@@ -45,6 +45,12 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSProcessInfo", "NSString"] }
 block2 = "0.6"
 
+# Linux: X11 capture and XTEST pointer input for gpui 0.2 apps; pure Rust, no libxcb.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["composite", "xtest"] }
+# gpui-pre-platform enables no Linux backend by default; without them GPUI runs headless.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", optional = true, features = ["x11", "wayland"] }
+
 [[example]]
 name = "demo"
 
