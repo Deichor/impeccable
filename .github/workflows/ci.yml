@@ -238,36 +238,70 @@ jobs:
       - run: cargo test --workspace --no-fail-fast
 
   # integrations/gpui-probe is outside the workspace (it links GPUI). Its two
-  # GPUI builds are tested on Windows, where captures and picking live.
+  # GPUI builds are tested on every OS. The window smoke test runs on Windows
+  # only for now. Linux (under xvfb-run) and macOS can enable `smoke` with
+  # `capture` off; `capture` flips on once their capture lands. On Linux the
+  # snapshot route currently times out under Xvfb, so smoke stays off there.
+  # If the macOS build fails on a missing Metal toolchain, try
+  # `xcodebuild -downloadComponent MetalToolchain`.
   gpui-probe:
-    runs-on: windows-latest
+    name: gpui-probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, smoke: true, capture: true }
+          - { os: macos-latest, smoke: false, capture: false }
+          - { os: ubuntu-latest, smoke: false, capture: false }
     defaults:
       run:
         working-directory: integrations/gpui-probe
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install GPUI build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
       - name: Install the pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
-            . -> target
+            ${{ matrix.smoke && '. -> target' || '' }}
             integrations/gpui-probe -> target
+      # xattr 0.2.3 (via gpui 0.2) does not compile against libc 0.2.191 on Linux.
+      - name: Pin libc for xattr
+        if: runner.os == 'Linux'
+        run: cargo update -p libc --precise 0.2.189
       - run: cargo test --lib
       - run: cargo test --lib --no-default-features --features snapshot
       - run: cargo build --release --example demo
+      - run: cargo build --example demo --no-default-features --features snapshot
       # A real window: start the demo, drive every probe route, and check the
       # engine's snapshot and sweep findings on it.
-      - run: cargo build --example demo --no-default-features --features snapshot
       - name: Build the engine
-        working-directory: .
-        run: cargo build -p impeccable
+        if: matrix.smoke
+        run: cargo build -p impeccable --manifest-path ../../Cargo.toml
+      - name: Install a virtual display
+        if: matrix.smoke && runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb mesa-vulkan-drivers
       - name: Window smoke test
+        if: matrix.smoke
+        timeout-minutes: 5
         shell: bash
-        run: IMPECCABLE_BIN="$GITHUB_WORKSPACE/target/debug/impeccable.exe" node scripts/smoke.mjs
+        env:
+          GPUI_PROBE_CAPTURE: ${{ matrix.capture && '1' || '0' }}
+        run: |
+          bin="$GITHUB_WORKSPACE/target/debug/impeccable"
+          [ "$RUNNER_OS" = Windows ] && bin="$bin.exe"
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a); else run=(); fi
+          IMPECCABLE_BIN="$bin" "${run[@]}" node scripts/smoke.mjs
 
   launcher-windows:
     runs-on: windows-latest
