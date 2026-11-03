@@ -27,7 +27,7 @@ The default build uses `gpui` 0.2 from crates.io. An app on Zed's `gpui-pre` sna
 # gpui-pre 0.3.11: captures, picking and live variants
 impeccable-gpui-probe = { git = "...", branch = "...", default-features = false, features = ["gpui-pre"] }
 
-# the same plus window snapshots and, on macOS, offscreen captures;
+# the same plus window snapshots and, on macOS and Linux, offscreen captures;
 # needs the patched GPUI at the workspace root
 impeccable-gpui-probe = { git = "...", branch = "...", default-features = false, features = ["snapshot"] }
 
@@ -37,6 +37,10 @@ gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "ma
 # Without these, captures fall back to ScreenCaptureKit.
 gpui-pre-macos = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 gpui-pre-apple = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+# Linux, `snapshot` only: the wgpu renderer that captures offscreen, on X11 and
+# Wayland. Without these, X11 captures read the X server and Wayland has none.
+gpui-pre-wgpu = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
+gpui-pre-linux = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }
 ```
 
 Run a debug build from the project root. The probe serves only this machine's own clients: requests from a browser page (any `Origin` header) or for a foreign `Host` get 403. The probe listens on 127.0.0.1 and writes its port to `.impeccable/gpui-probe.json`, which `impeccable gpui` reads. Add `.impeccable/gpui-probe.json` to `.gitignore`.
@@ -45,7 +49,7 @@ Run a debug build from the project root. The probe serves only this machine's ow
 
 | | Command | Notes |
 |---|---|---|
-| Window captures | `impeccable gpui capture --sizes 960x640,1440x900 --appearances dark,light` | One PNG per appearance × size, then restores the window size. Windows and macOS. |
+| Window captures | `impeccable gpui capture --sizes 960x640,1440x900 --appearances dark,light` | One PNG per appearance × size, then restores the window size. Windows, macOS and Linux. |
 | Pick an element | `ctrl-alt-i` in the app, hover, click; or `impeccable gpui pick --x --y` | The panel shows the element's source line. |
 | Live variants | `impeccable gpui variants --file v.json` | Style patches applied to the picked element at once; no rebuild. |
 | Decide | `ctrl-alt-←/→` switch, `ctrl-alt-enter` accept, `ctrl-alt-backspace` original | `impeccable gpui decision --wait` returns the accepted patch and source line. |
@@ -63,9 +67,10 @@ Variants change the picked instance only, and only until the inspector closes; t
 
 ## Limits
 
-- Window capture: Win32 `PrintWindow` on Windows. On macOS the `snapshot` build, with the fork's gpui-pre-macos and gpui-pre-apple patched in, renders the last frame offscreen through GPUI's Metal renderer: no permission, and covered windows and a locked screen capture too. Every other macOS build (gpui 0.2, plain `gpui-pre`) captures through ScreenCaptureKit, which needs macOS 14 and a window in front: macOS does not redraw a covered, minimized or other-Space window, so the probe refuses it rather than return a stale image, and it captures nothing while the screen is locked. It asks only for the app's own windows, which macOS 14.4 and later list without consent; if macOS still asks for Screen Recording, grant it to the terminal or editor that launched the app in System Settings > Privacy & Security > Screen & System Audio Recording. ScreenCaptureKit is loaded at run time, so a debug build still launches on older systems. Linux returns an error for now.
-- Point picking uses GPUI's own event dispatch on gpui-pre, where it works on every platform. On gpui 0.2 it posts native mouse events: Win32 messages on Windows, and on macOS `NSEvent`s handed to GPUI's view through the main run loop, which needs no Accessibility permission and does not focus the window. Linux returns an error for now.
+- Window capture: Win32 `PrintWindow` on Windows. On macOS the `snapshot` build, with the fork's gpui-pre-macos and gpui-pre-apple patched in, renders the last frame offscreen through GPUI's Metal renderer: no permission, and covered windows and a locked screen capture too. Every other macOS build (gpui 0.2, plain `gpui-pre`) captures through ScreenCaptureKit, which needs macOS 14 and a window in front: macOS does not redraw a covered, minimized or other-Space window, so the probe refuses it rather than return a stale image, and it captures nothing while the screen is locked. It asks only for the app's own windows, which macOS 14.4 and later list without consent; if macOS still asks for Screen Recording, grant it to the terminal or editor that launched the app in System Settings > Privacy & Security > Screen & System Audio Recording. ScreenCaptureKit is loaded at run time, so a debug build still launches on older systems. On Linux the `snapshot` build, with the fork's gpui-pre-wgpu and gpui-pre-linux patched in, renders offscreen through GPUI's wgpu renderer, the same on X11 and Wayland, covered or not. Without them, X11 reads the window from the X server: the compositor's copy when a compositing manager runs, otherwise the screen, where a covered part shows whatever covers it. A window whose frames never reached the X server (gpui 0.2 on Xvfb with a software Vulkan driver) is an error, not a black image. Wayland lets no app read another window's pixels, so there a gpui 0.2 or plain `gpui-pre` app is captured only when started under X11 with `WAYLAND_DISPLAY` unset.
+- Point picking uses GPUI's own event dispatch on gpui-pre, where it works on every platform. On gpui 0.2 it posts native mouse events: Win32 messages on Windows, and on macOS `NSEvent`s handed to GPUI's view through the main run loop, which needs no Accessibility permission and does not focus the window. On X11 it goes through XTEST, which moves the real pointer, so nothing may cover the window at that point. Wayland lets no app send input to another window, so a gpui 0.2 app there picks in the window (`ctrl-alt-i`) or moves to gpui-pre.
 - On macOS a covered window, or every window while the screen is locked, gets no display-link frames. When no frame comes within 100 ms, the probe draws one itself before a capture, pick or snapshot.
+- gpui 0.2 does not build on Linux with `libc` 0.2.191 (`xattr` 0.2.3, under `gpui_http_client`, uses the removed `libc::ENOATTR`): pin it with `cargo update -p libc --precise 0.2.189`.
 - Style variants change style only; structure goes through slots, which need one rebuild to add and one to remove.
 - The inspector exists in debug builds (or with GPUI's `inspector` feature).
 - Snapshot findings sit on the element that holds the text; text inside an element built in a library (gpui-component) points into that library.
