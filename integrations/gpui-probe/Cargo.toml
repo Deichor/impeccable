@@ -1,0 +1,27 @@
+[package]
+name = "impeccable-gpui-probe"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Debug-build bridge between a GPUI app and Impeccable: window captures and live style variants"
+
+# Not a member of the engine workspace: the engine must build without GPUI.
+
+[dependencies]
+gpui = "0.2"
+serde_json = "1"
+raw-window-handle = "0.6"
+png = "0.17"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[[example]]
+name = "demo"

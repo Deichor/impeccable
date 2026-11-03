@@ -2165,3 +2165,7 @@ carrying a visual decision never creates a submitted receipt or accepts stale fi
 this rule to an existing unsubmitted draft. It verifies stored image blobs and
 current source integrity, preserves any new reviewer decisions, records the
 prior approval revision, and leaves packet revisions and old receipts unchanged.
+
+#### `impeccable gpui` (no JS ancestor)
+
+Client for `integrations/gpui-probe`, the debug-build bridge inside a GPUI app. Port: `--port`, else `port` from the nearest `.impeccable/gpui-probe.json` walking up from cwd; none -> stderr `impeccable gpui <cmd>: no running probe found: ...`, exit 1. Subcommands print the probe's JSON pretty-printed and exit 0, or the probe's error body on stderr and exit 1: `status` (GET /status), `capture --out <dir, default .impeccable/review> [--sizes WxH,...] [--appearances dark,light]` (per appearance POST /appearance, per size POST /resize then GET /capture, files `window[-<appearance>][-<W>x<H>].png`, original size restored when sizes were given; prints `{files}`), `inspector --open|--close` (POST /inspector), `pick --x --y` (POST /pick, logical px; prints the selection), `selection [--wait] [--after <seq>]` (GET /selection; `--wait` polls every 400 ms, up to 600 s, until a non-picking selection with `seq > after`), `variants --file <json>` (POST /variants), `apply --index <n> | --original` (POST /apply), `decision [--wait]` (GET /decision; `--wait` until `decision` is non-null). No subcommand prints usage (exit 0 with `--help`, else 1).

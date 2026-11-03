@@ -2,7 +2,7 @@
 
 Generate is the fast lane into live mode: the user names an element, a direction, and a count in one sentence, and within a minute they are cycling through variants in their browser. One command boots the helper, hands the element to the overlay in the page your harness already shows (it scrolls to it, selects it, and fires the same Go a click fires) and returns the generate event; one edit writes the variants; one call replies and waits for the user's choice, which the helper bakes into source itself. This file owns the lane's plumbing; from the event onward the design work is [live.md](live.md)'s, unchanged, so read it in full now if you have not this session.
 
-**Web only.** Live mode's browser overlay has no native equivalent; on `ios` / `android` / `adaptive` / `desktop` projects, decline this command and offer `bolder` or `quieter` on the source instead.
+**Web only.** Live mode's browser overlay has no native equivalent; on `ios` / `android` / `adaptive` / `desktop` projects, decline this command (except a GPUI app with impeccable-gpui-probe attached: follow [gpui.md](gpui.md)'s Live variants) and offer `bolder` or `quieter` on the source instead.
 
 The plumbing is where the lane saves time: one command starts the session around the page your harness already shows, one call replies and waits, and nothing here is a browser you have to babysit. The design work is not where it saves time. Setup runs as for any command (`impeccable context`, this reference, craft-floor.md before the edit), and the variants are planned, written, and accepted exactly the way a live session plans, writes, and accepts them.
 

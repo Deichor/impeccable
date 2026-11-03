@@ -32,6 +32,14 @@ crates/
   comp-verbs   build-phase, comp-diff, comp-spec, font-match
   detect       `impeccable detect`: file walk, config, ignores, output, regex engine
   gpui         the GPUI source engine: `.rs` builder chains, theme tokens, rules
+```
+
+`integrations/gpui-probe` sits outside the workspace (`exclude` in the root
+`Cargo.toml`): it depends on GPUI and is added to a GPUI app's own debug
+build. `impeccable gpui` (`crates/context/src/gpui_probe.rs`) talks to it over
+localhost; the engine itself never links GPUI.
+
+```
   html         the static HTML engine: parser, cascade, static DOM, rule adapters
   browser      the URL engine: Chrome discovery, CDP, snapshot, visual pass
   foundation   JS-semantics helpers, color, findings, the rule registry, inline

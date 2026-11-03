@@ -4,6 +4,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Built against GPUI, which the engine never depends on.
+exclude = ["integrations/gpui-probe"]
 
 [workspace.package]
 version = "0.1.18"

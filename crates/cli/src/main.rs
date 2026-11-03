@@ -68,6 +68,7 @@ fn run(args: &[String], io: &mut Io) -> i32 {
         "embed-prompt" => impeccable_context::run_embed_prompt(rest, io),
         "signals" | "context-signals" => impeccable_context::run_signals(rest, io),
         "doctor" => impeccable_context::run_doctor(rest, io),
+        "gpui" => impeccable_context::run_gpui(rest, io),
         "concept-seed" => impeccable_context::run_concept_seed(rest, io),
         "telemetry" => impeccable_context::run_telemetry(rest, io),
         "generate-image" => impeccable_context::run_generate_image(rest, io),

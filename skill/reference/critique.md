@@ -32,7 +32,7 @@ Resolve one stable target, run two independent assessments, synthesize a design 
 
 **Native platforms** (`ios` / `android` / `adaptive`): Assessment B does not apply, because `impeccable detect` and the browser overlay read only web markup. Run Assessment A alone in this context and skip both sub-agent gates below, the Codex permission question included: with no B there is nothing to isolate A from, so this is the complete native method and carries no degraded banner. Do not run `impeccable detect` on native source; its empty result reads as clean.
 
-**Desktop** (`desktop`): follow `DESKTOP_TOOLKIT` from the context output. On `gpui`, Assessment B is the CLI scan of the `.rs` sources plus screenshots of the app window (no browser overlay, no live server); keep the sub-agent gates. On `web`, use **Desktop apps** under Assessment B. On an unknown toolkit, run it like a native platform: Assessment A alone, `Method: design review only (detector not applicable, desktop toolkit)`.
+**Desktop** (`desktop`): follow `DESKTOP_TOOLKIT` from the context output. On `gpui`, Assessment B is the CLI scan of the `.rs` sources plus screenshots of the app window (`impeccable gpui capture` when the probe is attached; no browser overlay, no live server); keep the sub-agent gates. On `web`, use **Desktop apps** under Assessment B. On an unknown toolkit, run it like a native platform: Assessment A alone, `Method: design review only (detector not applicable, desktop toolkit)`.
 
 Delegate Assessment A and Assessment B to separate sub-agents. They must not see each other's output. Do not show findings to the user until synthesis.
 

@@ -32,4 +32,15 @@ The design hook and `impeccable detect` read GPUI builder chains in `.rs` files 
 
 ## Verifying the build
 
-- **Capture the GPUI window itself.** GPUI draws with Metal, DirectX, or Vulkan, so a plain window grab can come back blank: on Windows use `PrintWindow` with `PW_RENDERFULLCONTENT`; on macOS `screencapture -l <window-id>`. Run a debug build when you need the GPUI inspector to find the source line of an element. <!-- rule:gpui-verify-capture -->
+- **Capture the GPUI window itself.** GPUI draws with Metal, DirectX, or Vulkan, so a plain window grab can come back blank. When the app runs a debug build with `impeccable-gpui-probe` attached (`{{scripts_path}}/impeccable gpui status` answers), capture the set in one call: `{{scripts_path}}/impeccable gpui capture --out .impeccable/review --sizes <min>,<large> --appearances dark,light`. Without the probe: on Windows `PrintWindow` with `PW_RENDERFULLCONTENT`, on macOS `screencapture -l <window-id>`. <!-- rule:gpui-verify-capture -->
+
+## Live variants
+
+With the probe attached, `live` and `generate` run on the window instead of a browser:
+
+1. Ask the user to press `ctrl-alt-i` in the app and click the element (or run `{{scripts_path}}/impeccable gpui pick --x <x> --y <y>` from a capture's coordinates, in logical pixels). `{{scripts_path}}/impeccable gpui selection --wait` returns its source line, style, and bounds.
+2. Write 2–4 distinct directions as style patches in the JSON shape the selection printed (`"background": "#rrggbbaa"` is accepted as a solid fill), label each in a few words, and send them: `{{scripts_path}}/impeccable gpui variants --file <json>`. They show at once; nothing rebuilds.
+3. The user switches with `ctrl-alt-←/→` and accepts with `ctrl-alt-enter`. `{{scripts_path}}/impeccable gpui decision --wait` returns the accepted patch.
+4. Write the accepted patch into the builder chain at the source line, in the app's own vocabulary: scale methods (`.p_3()`), theme tokens for colors, not raw values. Rebuild and capture to confirm.
+
+Patches cover style only. A variant that changes structure, children, or copy is a code edit: build the alternatives behind one `match` on a debug-only index, rebuild once, and let the user compare. <!-- rule:gpui-live-variants -->

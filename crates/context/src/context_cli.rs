@@ -649,7 +649,7 @@ fn write_update_cache(path: &str, cache: &Map<String, Value>) {
 fn desktop_toolkit_directive(toolkit: Option<&str>, provider: &Provider) -> String {
     match toolkit {
         Some(crate::desktop::GPUI) => format!(
-            "DESKTOP_TOOLKIT: gpui. The design hook and `{}` read GPUI builder code in `.rs` files: source rules only, with colors and fonts resolved from the Cargo workspace's theme functions and constants. They cannot see what the window paints, so verify contrast, overflow and density from a window screenshot. Live mode and `generate` do not apply.",
+            "DESKTOP_TOOLKIT: gpui. The design hook and `{}` read GPUI builder code in `.rs` files: source rules only, with colors and fonts resolved from the Cargo workspace's theme functions and constants. They cannot see what the window paints, so verify contrast, overflow and density from a window screenshot. When the app's debug build attaches impeccable-gpui-probe, `impeccable gpui` captures the window and runs live style variants (reference/gpui.md); without it, live mode and `generate` do not apply.",
             provider.verb_cmd("detect")
         ),
         Some(_) => "DESKTOP_TOOLKIT: web. The window renders web content (Electron, Tauri, NW.js): the web detector and design hook apply to its HTML/CSS/JSX sources, and desktop conventions come from reference/desktop.md.".to_string(),
