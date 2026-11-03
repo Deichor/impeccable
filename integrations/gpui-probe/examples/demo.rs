@@ -30,8 +30,20 @@ fn accent() -> Rgba {
 struct Demo;
 
 impl Render for Demo {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let item = |title: &'static str, meta: &'static str| {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A structure variant: switch with ctrl-alt-left/right while no style variants are shown.
+        let layout = impeccable_gpui_probe::slot("build-item", &["Card", "Row"], cx);
+        let item = move |title: &'static str, meta: &'static str| {
+            if layout == 1 {
+                return div()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(faint())
+                    .flex()
+                    .justify_between()
+                    .child(div().text_size(px(15.)).text_color(text()).child(title))
+                    .child(div().text_size(px(13.)).text_color(text()).child(meta));
+            }
             div()
                 .p_4()
                 .rounded_lg()

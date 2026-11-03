@@ -45,3 +45,28 @@ pub fn attach(cx: &mut App, options: Options) {
     #[cfg(not(debug_assertions))]
     let _ = (cx, options);
 }
+
+/// A structure variant point. Build the alternatives behind one `match` on the
+/// returned index; the probe lists the slot, `ctrl-alt-←/→` switches it live
+/// and `ctrl-alt-enter` accepts. Arm 0 is the current design. Release builds
+/// always return 0.
+///
+/// ```ignore
+/// match impeccable_gpui_probe::slot("build-row", &["Card", "Compact row"], cx) {
+///     0 => card(build),
+///     _ => row(build),
+/// }
+/// ```
+#[track_caller]
+pub fn slot<V: 'static>(id: &'static str, labels: &[&'static str], cx: &mut gpui::Context<V>) -> usize {
+    #[cfg(debug_assertions)]
+    {
+        let entity = cx.entity_id();
+        imp::slot(id, labels, entity, std::panic::Location::caller(), cx)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (id, labels, cx);
+        0
+    }
+}

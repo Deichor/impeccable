@@ -24,6 +24,8 @@ Talks to a running GPUI app built with impeccable-gpui-probe (debug builds).
   variants --file <json>         {\"variants\":[{\"label\":..,\"style\":{..patch..}}]}
   apply --index <n> | --original show one variant, or the original style
   decision [--wait]              what the user accepted (ctrl-alt-enter in the app)
+  slots                          structure variant points (impeccable_gpui_probe::slot)
+  slot [--id <id>] [--index <n>] make a slot the keyboard target, optionally show arm n
   snapshot [--out <file>] [--raw]
                                  everything the window painted, checked for contrast,
                                  tiny text and cut-off text (probe built with `snapshot`)
@@ -196,6 +198,14 @@ fn dispatch(sub: &str, args: &[String], cwd: &str) -> Result<Value, String> {
                 get_json(port, "/decision")
             }
         }
+        "slots" => get_json(port, "/slots"),
+        "slot" => {
+            let index = match flag(args, "--index") {
+                Some(v) => Value::from(v.parse::<u64>().map_err(|_| format!("invalid --index {v}"))?),
+                None => Value::Null,
+            };
+            post(port, "/slot", &json!({ "id": flag(args, "--id"), "index": index }))
+        }
         "snapshot" => {
             let snap = get_json(port, "/snapshot")?;
             if let Some(out) = flag(args, "--out") {
@@ -253,5 +263,100 @@ mod tests {
         assert_eq!(port(&[], &nested.to_string_lossy()), Ok(4123));
         assert_eq!(port(&["--port".into(), "99".into()], "/"), Ok(99));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+    /// A stand-in probe answering `requests` calls with `route(method, path, body)`.
+    fn fake_probe(requests: usize, route: fn(&str, &str, &str) -> (u16, String)) -> (u16, Seen, std::thread::JoinHandle<()>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let seen: Seen = Default::default();
+        let log = seen.clone();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..requests {
+                let Ok(Some(mut req)) = server.recv_timeout(Duration::from_secs(10)) else { return };
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                let (method, path) = (req.method().to_string(), req.url().to_string());
+                let (status, reply) = route(&method, &path, &body);
+                log.lock().unwrap().push((method, path, body));
+                let _ = req.respond(tiny_http::Response::from_string(reply).with_status_code(status));
+            }
+        });
+        (port, seen, handle)
+    }
+
+    fn args(port: u16, rest: &[&str]) -> Vec<String> {
+        let mut v = vec!["--port".to_string(), port.to_string()];
+        v.extend(rest.iter().map(|s| s.to_string()));
+        v
+    }
+
+    const SNAPSHOT: &str = r##"{"viewport":[400,200],"nodes":[
+        {"kind":"element","parent":null,"source":"src\\ui.rs:10:5","bounds":[0,0,400,200],"clip":[0,0,400,200],"style":{"background":{"Color":{"tag":"Solid","solid":"#1c1d21ff"}}}},
+        {"kind":"text","parent":0,"text":"Finished","fontSize":14,"bounds":[0,0,60,20],"clip":[0,0,400,200],"size":[60,20],"runs":[{"len":8,"color":"#55555aff"}]}
+    ]}"##;
+
+    #[test]
+    fn snapshot_runs_the_window_rules_and_can_save_the_raw_tree() {
+        let (port, seen, handle) = fake_probe(2, |_, _, _| (200, SNAPSHOT.to_string()));
+        let dir = std::env::temp_dir().join(format!("impeccable-gpui-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+
+        let v = dispatch("snapshot", &args(port, &["--out", "snap.json"]), &cwd).unwrap();
+        assert_eq!(v["nodes"], 2);
+        let f = &v["findings"][0];
+        assert_eq!((f["antipattern"].as_str(), f["file"].as_str(), f["line"].as_f64()), (Some("low-contrast"), Some("src/ui.rs"), Some(10.0)));
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("snap.json")).unwrap()).unwrap();
+        assert_eq!(saved["nodes"].as_array().map(Vec::len), Some(2));
+
+        let raw = dispatch("snapshot", &args(port, &["--raw"]), &cwd).unwrap();
+        assert!(raw.get("findings").is_none() && raw["nodes"].is_array());
+        handle.join().unwrap();
+        assert!(seen.lock().unwrap().iter().all(|(m, p, _)| m == "GET" && p == "/snapshot"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_errors_reach_the_caller() {
+        let (port, _, handle) = fake_probe(1, |_, _, _| (501, r#"{"error":"built without the `snapshot` feature"}"#.into()));
+        let err = dispatch("snapshot", &args(port, &[]), "/").unwrap_err();
+        assert!(err.contains("without the `snapshot` feature"), "{err}");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn slot_and_variants_send_the_expected_bodies() {
+        let (port, seen, handle) = fake_probe(3, |_, _, body| (200, if body.is_empty() { "{}".into() } else { body.to_string() }));
+        let dir = std::env::temp_dir().join(format!("impeccable-gpui-variants-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("v.json"), r#"{"variants":[{"label":"Quiet","style":{"opacity":0.8}}]}"#).unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+
+        dispatch("slot", &args(port, &["--id", "build-item", "--index", "1"]), &cwd).unwrap();
+        dispatch("slot", &args(port, &[]), &cwd).unwrap();
+        dispatch("variants", &args(port, &["--file", "v.json"]), &cwd).unwrap();
+        assert!(dispatch("slot", &args(port, &["--index", "x"]), &cwd).unwrap_err().contains("invalid --index"));
+        handle.join().unwrap();
+
+        let seen = seen.lock().unwrap();
+        let body = |i: usize| serde_json::from_str::<Value>(&seen[i].2).unwrap();
+        assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("POST", "/slot"));
+        assert_eq!(body(0), json!({ "id": "build-item", "index": 1 }));
+        assert_eq!(body(1), json!({ "id": null, "index": null }));
+        assert_eq!(seen[2].1, "/variants");
+        assert_eq!(body(2)["variants"][0]["label"], "Quiet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_probe_is_a_clear_error() {
+        let dir = std::env::temp_dir().join(format!("impeccable-gpui-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = dispatch("status", &[], &dir.to_string_lossy()).unwrap_err();
+        assert!(err.starts_with("no running probe found"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

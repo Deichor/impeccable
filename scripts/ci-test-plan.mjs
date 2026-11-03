@@ -19,6 +19,7 @@ const forceOptIn = eventName === 'workflow_dispatch';
 // the oracle job replays them against a source build.
 const RUST_PATTERNS = [
   /^crates\//,
+  /^integrations\/gpui-probe\//,
   /^Cargo\.(toml|lock)$/,
   /^rust-toolchain\.toml$/,
   /^browser-bundle\//,

@@ -237,6 +237,27 @@ jobs:
           exit 0
       - run: cargo test --workspace --no-fail-fast
 
+  # integrations/gpui-probe is outside the workspace (it links GPUI). Its two
+  # GPUI builds are tested on Windows, where captures and picking live.
+  gpui-probe:
+    runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    defaults:
+      run:
+        working-directory: integrations/gpui-probe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: integrations/gpui-probe
+      - run: cargo test --lib
+      - run: cargo test --lib --no-default-features --features snapshot
+      - run: cargo build --release --example demo
+
   launcher-windows:
     runs-on: windows-latest
     needs: changes

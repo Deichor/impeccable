@@ -103,3 +103,42 @@ fn read_request(stream: &TcpStream) -> Option<(String, String, Vec<u8>)> {
     reader.read_exact(&mut body).ok()?;
     Some((method, path, body))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    fn exchange(raw: &[u8]) -> String {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let port = start(0, tx).unwrap();
+        std::thread::spawn(move || {
+            if let Ok(req) = rx.recv_timeout(Duration::from_secs(5)) {
+                let body = String::from_utf8_lossy(&req.body).to_string();
+                let _ = req.reply.send(Reply::json(201, &serde_json::json!({ "method": req.method, "path": req.path, "body": body })));
+            }
+        });
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.write_all(raw).unwrap();
+        let mut out = String::new();
+        let _ = stream.read_to_string(&mut out);
+        out
+    }
+
+    #[test]
+    fn requests_reach_the_app_and_replies_come_back() {
+        let out = exchange(b"POST /variants HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}");
+        assert!(out.starts_with("HTTP/1.1 201 "), "{out}");
+        assert!(out.contains("Content-Type: application/json"));
+        let body = out.split("\r\n\r\n").nth(1).unwrap();
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(v, serde_json::json!({ "method": "POST", "path": "/variants", "body": "{\"a\":1}" }));
+    }
+
+    #[test]
+    fn oversized_bodies_are_dropped() {
+        let raw = format!("POST /variants HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
+        assert_eq!(exchange(raw.as_bytes()), "");
+    }
+}

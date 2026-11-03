@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, AnyElement, App, AsyncApp, Context, DivInspectorState, Empty, Global,
+    actions, div, prelude::*, px, rgb, AnyElement, App, AsyncApp, Context, DivInspectorState, Empty, EntityId, Global,
     Inspector, InspectorElementId, KeyBinding, SharedString, StyleRefinement, Window,
 };
 use serde_json::{json, Map, Value};
@@ -61,6 +61,18 @@ struct Shared {
     dark: Option<bool>,
     inspector_open: bool,
     port: u16,
+    slots: Vec<Slot>,
+    /// The slot the keyboard switches when no style variants are shown.
+    active_slot: Option<usize>,
+}
+
+/// A structure variant point: one `match` in the app's render code.
+struct Slot {
+    id: &'static str,
+    labels: Vec<&'static str>,
+    current: usize,
+    source: String,
+    entities: Vec<EntityId>,
 }
 
 #[derive(Clone)]
@@ -87,6 +99,8 @@ pub fn attach(cx: &mut App, options: Options) {
         dark: None,
         inspector_open: false,
         port,
+        slots: Vec::new(),
+        active_slot: None,
     }));
     cx.set_global(Probe(shared));
     write_discovery(port);
@@ -108,7 +122,15 @@ pub fn attach(cx: &mut App, options: Options) {
     cx.on_action(|_: &AcceptVariant, cx| cx.defer(accept));
     cx.on_action(|_: &RevertVariant, cx| {
         cx.defer(|cx| {
-            let _ = apply(cx, None);
+            let styles = !probe(cx).borrow().live.variants.is_empty();
+            if styles {
+                let _ = apply(cx, None);
+            } else {
+                let active = probe(cx).borrow().active_slot;
+                if let Some(i) = active {
+                    set_slot(cx, i, 0);
+                }
+            }
         })
     });
 
@@ -333,6 +355,7 @@ fn step(cx: &mut App, delta: i64) {
         (s.live.variants.len() as i64, s.live.current)
     };
     if count == 0 {
+        step_slot(cx, delta);
         return;
     }
     let next = match current {
@@ -346,6 +369,19 @@ fn step(cx: &mut App, delta: i64) {
 fn accept(cx: &mut App) {
     let shared = probe(cx);
     let mut s = shared.borrow_mut();
+    if s.live.variants.is_empty() {
+        if let Some(slot) = s.active_slot.and_then(|i| s.slots.get(i)) {
+            let decision = json!({
+                "slot": slot.id,
+                "index": slot.current,
+                "label": slot.labels.get(slot.current),
+                "source": slot.source,
+            });
+            s.live.decision = Some(decision);
+            s.live.seq += 1;
+            return;
+        }
+    }
     let index = s.live.current;
     let decision = json!({
         "index": index,
@@ -445,6 +481,16 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
             501,
             "this probe was built without the `snapshot` feature; it needs gpui-pre with the new-horizon-code-repo/gpui patch",
         ),
+        ("GET", "/slots") => cx.up(slots).unwrap_or_else(|_| Reply::error(500, "app gone")),
+        ("POST", "/slot") => {
+            let id = body["id"].as_str().map(str::to_string);
+            let index = body["index"].as_u64().map(|i| i as usize);
+            match cx.up(|cx| arm_slot(cx, id.as_deref(), index)) {
+                Ok(Ok(v)) => Reply::json(200, &v),
+                Ok(Err(e)) => Reply::error(404, &e),
+                Err(_) => Reply::error(500, "app gone"),
+            }
+        }
         ("GET", "/selection") => cx.up(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
         ("POST", "/variants") => cx
             .up(|cx| set_variants(cx, &body))
@@ -501,6 +547,7 @@ fn status(cx: &mut App) -> Reply {
             "inspectorOpen": s.inspector_open,
             "selection": s.selection.source,
             "variants": s.live.variants.len(),
+            "slots": s.slots.len(),
         }),
     )
 }
@@ -647,4 +694,168 @@ fn snapshot_json(snap: &gpui::UiSnapshot) -> Value {
         "rem": f32::from(snap.rem_size),
         "nodes": nodes,
     })
+}
+
+// ─── structure slots ───────────────────────────────────────────────────────
+
+pub(crate) fn slot(
+    id: &'static str,
+    labels: &[&'static str],
+    entity: EntityId,
+    source: &'static std::panic::Location<'static>,
+    cx: &mut App,
+) -> usize {
+    if labels.is_empty() || !cx.has_global::<Probe>() {
+        return 0;
+    }
+    let shared = probe(cx);
+    let mut s = shared.borrow_mut();
+    let index = match s.slots.iter().position(|slot| slot.id == id) {
+        Some(i) => i,
+        None => {
+            s.slots.push(Slot {
+                id,
+                labels: labels.to_vec(),
+                current: 0,
+                source: format!("{}:{}:{}", source.file(), source.line(), source.column()),
+                entities: Vec::new(),
+            });
+            s.slots.len() - 1
+        }
+    };
+    if s.active_slot.is_none() {
+        s.active_slot = Some(index);
+    }
+    let slot = &mut s.slots[index];
+    slot.labels = labels.to_vec();
+    if !slot.entities.contains(&entity) {
+        slot.entities.push(entity);
+    }
+    slot.current.min(labels.len() - 1)
+}
+
+fn set_slot(cx: &mut App, index: usize, current: usize) {
+    let entities = {
+        let shared = probe(cx);
+        let mut s = shared.borrow_mut();
+        let Some(slot) = s.slots.get_mut(index) else { return };
+        slot.current = current.min(slot.labels.len().saturating_sub(1));
+        slot.entities.clone()
+    };
+    for entity in entities {
+        cx.notify(entity);
+    }
+    cx.refresh_windows();
+}
+
+fn step_slot(cx: &mut App, delta: i64) {
+    let target = {
+        let shared = probe(cx);
+        let s = shared.borrow();
+        s.active_slot.and_then(|i| s.slots.get(i).map(|slot| (i, slot.current as i64, slot.labels.len() as i64)))
+    };
+    if let Some((i, current, count)) = target.filter(|t| t.2 > 0) {
+        set_slot(cx, i, (current + delta).rem_euclid(count) as usize);
+    }
+}
+
+fn slot_json(slot: &Slot, active: bool) -> Value {
+    json!({
+        "id": slot.id,
+        "labels": slot.labels,
+        "current": slot.current,
+        "source": slot.source,
+        "active": active,
+    })
+}
+
+fn slots(cx: &mut App) -> Reply {
+    let shared = probe(cx);
+    let s = shared.borrow();
+    let list: Vec<Value> = s.slots.iter().enumerate().map(|(i, slot)| slot_json(slot, s.active_slot == Some(i))).collect();
+    Reply::json(200, &json!({ "slots": list }))
+}
+
+/// Make a slot the keyboard target, and optionally show one of its arms.
+fn arm_slot(cx: &mut App, id: Option<&str>, current: Option<usize>) -> Result<Value, String> {
+    let index = {
+        let shared = probe(cx);
+        let mut s = shared.borrow_mut();
+        let index = match id {
+            Some(id) => s.slots.iter().position(|slot| slot.id == id).ok_or_else(|| format!("no slot `{id}` has rendered yet"))?,
+            None => s.active_slot.ok_or("no slot has rendered yet")?,
+        };
+        if let Some(n) = current {
+            let count = s.slots[index].labels.len();
+            if n >= count {
+                return Err(format!("slot `{}` has {count} arms", s.slots[index].id));
+            }
+        }
+        s.active_slot = Some(index);
+        index
+    };
+    if let Some(n) = current {
+        set_slot(cx, index, n);
+    }
+    let shared = probe(cx);
+    let s = shared.borrow();
+    Ok(slot_json(&s.slots[index], true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nulls_and_empty_objects_are_stripped() {
+        let v = without_nulls(json!({ "a": null, "b": { "c": null }, "d": { "e": 1, "f": null } }));
+        assert_eq!(v, json!({ "d": { "e": 1 } }));
+    }
+
+    #[test]
+    fn patches_merge_and_null_removes_a_key() {
+        let mut base = json!({ "opacity": 1.0, "text": { "color": "#ffffffff", "font_size": "14px" } });
+        merge(&mut base, &json!({ "opacity": null, "text": { "color": "#000000ff" } }));
+        assert_eq!(base, json!({ "text": { "color": "#000000ff", "font_size": "14px" } }));
+    }
+
+    #[test]
+    fn a_background_shorthand_becomes_a_real_style_refinement() {
+        let mut style = json!({});
+        merge(&mut style, &expand_shorthand(json!({ "background": "#ff0000ff", "opacity": 0.5 })));
+        let refinement: StyleRefinement = serde_json::from_value(style).expect("a valid StyleRefinement");
+        assert_eq!(refinement.opacity, Some(0.5));
+        let round = serde_json::to_value(&refinement).unwrap();
+        assert_eq!(round["background"]["Color"]["solid"], "#ff0000ff");
+    }
+
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn snapshot_json_drops_the_probe_panel_and_remaps_parents() {
+        use gpui::{point, px, size, Bounds, Style, UiNode, UiNodeKind, UiSnapshot};
+
+        let b = Bounds { origin: point(px(0.), px(0.)), size: size(px(100.), px(40.)) };
+        let element = |parent: Option<usize>, source| UiNode {
+            parent,
+            source,
+            id: None,
+            bounds: b,
+            clip: b,
+            kind: UiNodeKind::Element { style: Box::new(Style::default()), content_size: b.size },
+        };
+        // A Location from this file stands in for the probe's own inspector panel.
+        let here = std::panic::Location::caller();
+        let snap = UiSnapshot {
+            nodes: vec![element(None, None), element(None, Some(here)), element(Some(1), None), element(Some(0), None)],
+            viewport: b.size,
+            scale_factor: 2.0,
+            rem_size: px(16.),
+        };
+        let v = snapshot_json(&snap);
+        let nodes = v["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2, "{v:#}");
+        assert_eq!(nodes[1]["parent"], 0);
+        assert_eq!(nodes[0]["style"]["borderWidths"], json!([0.0, 0.0, 0.0, 0.0]));
+        assert_eq!(v["rem"], 16.0);
+    }
 }
