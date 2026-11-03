@@ -238,14 +238,18 @@ jobs:
       - run: cargo test --workspace --no-fail-fast
 
   # integrations/gpui-probe is outside the workspace (it links GPUI). Its two
-  # GPUI builds are tested on every OS. The window smoke test runs where the
-  # probe's capture and picking exist: Windows today. Switch Linux (run under
-  # xvfb-run) or macOS on by setting its `smoke` and `capture` to true.
+  # GPUI builds are tested on every OS. The window smoke test runs on Windows
+  # only for now. Linux (under xvfb-run) and macOS can enable `smoke` with
+  # `capture` off; `capture` flips on once their capture lands. On Linux the
+  # snapshot route currently times out under Xvfb, so smoke stays off there.
+  # If the macOS build fails on a missing Metal toolchain, try
+  # `xcodebuild -downloadComponent MetalToolchain`.
   gpui-probe:
     name: gpui-probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -269,27 +273,27 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
-            . -> target
+            ${{ matrix.smoke && '. -> target' || '' }}
             integrations/gpui-probe -> target
       # xattr 0.2.3 (via gpui 0.2) does not compile against libc 0.2.191 on Linux.
       - name: Pin libc for xattr
         if: runner.os == 'Linux'
-        run: cargo update -p libc --precise 0.2.186
+        run: cargo update -p libc --precise 0.2.189
       - run: cargo test --lib
       - run: cargo test --lib --no-default-features --features snapshot
       - run: cargo build --release --example demo
+      - run: cargo build --example demo --no-default-features --features snapshot
       # A real window: start the demo, drive every probe route, and check the
       # engine's snapshot and sweep findings on it.
-      - name: Build the demo and the engine
+      - name: Build the engine
         if: matrix.smoke
-        run: |
-          cargo build --example demo --no-default-features --features snapshot
-          cargo build -p impeccable --manifest-path ../../Cargo.toml
+        run: cargo build -p impeccable --manifest-path ../../Cargo.toml
       - name: Install a virtual display
         if: matrix.smoke && runner.os == 'Linux'
         run: sudo apt-get install -y xvfb mesa-vulkan-drivers
       - name: Window smoke test
         if: matrix.smoke
+        timeout-minutes: 5
         shell: bash
         env:
           GPUI_PROBE_CAPTURE: ${{ matrix.capture && '1' || '0' }}
