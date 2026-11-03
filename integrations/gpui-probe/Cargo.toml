@@ -13,7 +13,8 @@ default = ["gpui-0-2"]
 # The crates.io GPUI release apps use today.
 gpui-0-2 = ["dep:gpui"]
 # Zed's weekly gpui-pre snapshots, which gpui-kit also builds on.
-gpui-pre = ["dep:gpui-pre", "dep:gpui_platform"]
+# `font-kit` is the macOS text system; without it GPUI paints no text there.
+gpui-pre = ["dep:gpui-pre", "dep:gpui_platform", "gpui_platform/font-kit"]
 # Window UI snapshots; needs the new-horizon-code-repo/gpui fork patched in for gpui-pre.
 snapshot = ["gpui-pre"]
 
