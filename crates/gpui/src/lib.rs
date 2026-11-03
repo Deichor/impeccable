@@ -8,11 +8,13 @@
 
 mod lex;
 mod model;
+mod pack;
 mod rules;
 mod snapshot;
 mod tokens;
 mod value;
 
+pub use pack::register as register_rules;
 pub use snapshot::detect_snapshot;
 pub use tokens::Tokens;
 
@@ -44,6 +46,7 @@ pub fn detect_gpui_with(content: &str, file_path: &str, inline_ignores: bool, to
     if !is_gpui_source(content) {
         return Vec::new();
     }
+    pack::register();
     let lexed = lex::lex(content);
     let chains = model::chains(&lexed.tokens, &lexed.code);
     let mut seen = std::collections::HashSet::new();
@@ -143,4 +146,21 @@ mod tests {
         assert!(!is_rust_path("C:\\app\\target\\debug\\build\\x\\out\\gen.rs"));
         assert!(!is_rust_path("src/app.tsx"));
     }
+
+    #[test]
+    fn icon_buttons_need_a_name_and_focusable_controls_a_focus_style() {
+        let src = r#"use gpui::*;
+fn bar(cx: &mut App) -> impl IntoElement {
+    div()
+        .child(div().id("close").size_6().on_click(|_, _, _| {}).child(svg().path("icons/x.svg")))
+        .child(div().id("named").on_click(|_, _, _| {}).tooltip(Tooltip::text("Close")).child(svg().path("icons/x.svg")))
+        .child(div().id("save").track_focus(&handle).on_click(|_, _, _| {}).child("Save"))
+        .child(div().id("ok").track_focus(&handle).focus(|s| s.border_1()).on_click(|_, _, _| {}).child("Ok"))
+}
+"#;
+        let found = detect_gpui_with(src, "ui/bar.rs", false, &Tokens::default());
+        let ids: Vec<(&str, f64)> = found.iter().map(|f| (f.antipattern.as_str(), f.line)).collect();
+        assert_eq!(ids, vec![("gpui/unnamed-icon-button", 4.0), ("gpui/no-focus-style", 6.0)], "{found:#?}");
+    }
+
 }

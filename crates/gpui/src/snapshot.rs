@@ -8,12 +8,18 @@ use impeccable_core::constants::overused_font_name;
 use impeccable_core::findings::{try_finding, Finding};
 use serde_json::Value;
 
+use crate::pack::{NO_FOCUS_STYLE, UNNAMED_ICON_BUTTON, UNREACHABLE_CONTROL, UNVIRTUALIZED_LIST};
+
 /// Desktop floor shared with the source rule.
 const TINY_TEXT_PX: f64 = 11.0;
 /// Slack for sub-pixel layout before a spill counts as overflow.
 const OVERFLOW_SLACK_PX: f64 = 1.0;
 /// `shadow_xl` and wider.
 const WIDE_SHADOW_BLUR_PX: f64 = 25.0;
+/// Largest box still read as an icon button.
+const ICON_BUTTON_PX: f64 = 48.0;
+/// Children past which a scrolling container should be a virtual list.
+const LONG_LIST_CHILDREN: usize = 50;
 
 fn hex(v: &Value) -> Option<Rgba> {
     let s = v.as_str()?.strip_prefix('#')?;
@@ -30,7 +36,19 @@ fn rect(v: &Value) -> Option<[f64; 4]> {
 /// A solid fill, `None` for no background, `Err` for a fill we cannot reduce
 /// to one color (gradient, pattern).
 fn fill(node: &Value) -> Result<Option<Rgba>, ()> {
-    let bg = &node["style"]["background"];
+    solid(&node["style"]["background"])
+}
+
+/// The fill a node shows in `state` (`hover`, `active`): the state's own
+/// background when it sets one, else the resting fill.
+fn fill_in(node: &Value, state: Option<&str>) -> Result<Option<Rgba>, ()> {
+    match state.map(|s| &node["states"][s]["background"]).filter(|bg| !bg.is_null()) {
+        Some(bg) => solid(bg),
+        None => fill(node),
+    }
+}
+
+fn solid(bg: &Value) -> Result<Option<Rgba>, ()> {
     if bg.is_null() {
         return Ok(None);
     }
@@ -118,9 +136,13 @@ fn ancestors<'a>(nodes: &'a [Node<'a>], idx: usize) -> impl Iterator<Item = usiz
 /// The color behind a node: ancestor fills composited bottom-up. `None` when
 /// a gradient is in the way or nothing opaque is found.
 fn backdrop(nodes: &[Node], idx: usize) -> Option<Rgba> {
+    backdrop_in(nodes, idx, None)
+}
+
+fn backdrop_in(nodes: &[Node], idx: usize, state: Option<&str>) -> Option<Rgba> {
     let mut layers = Vec::new();
     for i in ancestors(nodes, idx) {
-        if let Some(c) = fill(nodes[i].v).ok()? {
+        if let Some(c) = fill_in(nodes[i].v, state).ok()? {
             let opaque = c.alpha_or_one() >= 1.0;
             layers.push(c);
             if opaque {
@@ -144,6 +166,39 @@ fn source(nodes: &[Node], idx: usize) -> Option<(String, f64)> {
         let line: f64 = parts.next()?.parse().ok()?;
         Some((parts.next()?.replace('\\', "/"), line))
     })
+}
+
+/// Whether any ancestor of a text declares `state` with a fill or text color.
+fn state_changes(nodes: &[Node], idx: usize, state: &str) -> bool {
+    ancestors(nodes, idx).any(|i| {
+        let st = &nodes[i].v["states"][state];
+        !st["background"].is_null() || !st["text"]["color"].is_null()
+    })
+}
+
+/// The ink a text shows in `state`: the nearest ancestor's state text color.
+fn ink_in(nodes: &[Node], idx: usize, state: &str) -> Option<Rgba> {
+    ancestors(nodes, idx).find_map(|i| hex(&nodes[i].v["states"][state]["text"]["color"]))
+}
+
+fn worst_ratio(runs: &[Rgba], bg: &Rgba) -> Option<(f64, Rgba)> {
+    runs.iter()
+        .map(|ink| {
+            let ink = if ink.alpha_or_one() < 1.0 { composite_color_over(ink, bg) } else { *ink };
+            (contrast_ratio(&ink, bg), ink)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+/// A focusable ancestor that handles keys covers a clickable child.
+fn handles_keys(node: &Value) -> bool {
+    let input = &node["input"];
+    input["focusable"].as_bool().unwrap_or(false)
+        && (input["actions"].as_u64().unwrap_or(0) > 0 || input["keyContext"].as_bool().unwrap_or(false))
+}
+
+fn flag(v: &Value, key: &str) -> bool {
+    v["input"][key].as_bool().unwrap_or(false)
 }
 
 fn quote(text: &str) -> String {
@@ -184,12 +239,21 @@ impl Sink {
 /// Findings for one snapshot, at the source line of the element holding each text.
 pub fn detect_snapshot(snapshot: &Value) -> Vec<Finding> {
     let nodes = nodes(snapshot);
+    crate::pack::register();
     let mut sink = Sink::default();
     let mut fonts = std::collections::HashSet::new();
     let mut children = vec![0usize; nodes.len()];
-    for n in &nodes {
-        if let Some(c) = n.parent.and_then(|p| children.get_mut(p)) {
-            *c += 1;
+    let mut first_child = vec![None; nodes.len()];
+    let mut has_text = vec![false; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        if let Some(p) = n.parent.filter(|p| *p < nodes.len()) {
+            children[p] += 1;
+            first_child[p].get_or_insert(i);
+        }
+        if n.v["kind"].as_str() == Some("text") && n.v["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+            for a in ancestors(&nodes, i) {
+                has_text[a] = true;
+            }
         }
     }
 
@@ -228,6 +292,55 @@ pub fn detect_snapshot(snapshot: &Value) -> Vec<Finding> {
                 if let Some(p) = stops.iter().filter_map(|stop| hex(&stop["color"])).find(is_purple) {
                     sink.push("ai-color-palette", at.clone(), format!("Purple/violet gradient ({})", color_to_hex(Some(&p))));
                 }
+            }
+
+            let b = rect(&v["bounds"]).unwrap_or_default();
+            let clickable = flag(v, "clickable");
+            if clickable && !flag(v, "focusable") && v["input"]["tabIndex"].is_null() && !ancestors(&nodes, idx).any(|i| handles_keys(nodes[i].v)) {
+                sink.push(UNREACHABLE_CONTROL, at.clone(), format!("clickable {:.0}x{:.0} box with no focus handle", b[2], b[3]));
+            }
+            let states = &v["states"];
+            if clickable && flag(v, "focusable") && !flag(v, "keyContext") && states["focus"].is_null() && states["focusVisible"].is_null() {
+                sink.push(NO_FOCUS_STYLE, at.clone(), "focusable control with no .focus(..) or .focus_visible(..) style".into());
+            }
+            let small = b[2] <= ICON_BUTTON_PX && b[3] <= ICON_BUTTON_PX;
+            if clickable && small && children[idx] > 0 && !has_text[idx] && !flag(v, "tooltip") && v["input"]["label"].is_null() {
+                sink.push(UNNAMED_ICON_BUTTON, at.clone(), format!("{:.0}x{:.0} icon button with no tooltip or label", b[2], b[3]));
+            }
+            if let Some(content) = v["content"].as_array() {
+                let (cw, ch) = (content.first().map(num).unwrap_or(0.0), content.get(1).map(num).unwrap_or(0.0));
+                let scrolls = ch > b[3] * 1.5 || cw > b[2] * 1.5;
+                if children[idx] >= LONG_LIST_CHILDREN && scrolls {
+                    sink.push(
+                        UNVIRTUALIZED_LIST,
+                        at.clone(),
+                        format!("{} children laid out in a {:.0}px box ({:.0}px of content)", children[idx], b[3].max(b[2]), ch.max(cw)),
+                    );
+                }
+            }
+            continue;
+        }
+        if v["kind"].as_str() == Some("animation") {
+            let curve: Vec<f64> = v["easing"].as_array().map(|a| a.iter().map(num).collect()).unwrap_or_default();
+            let (Some(first), Some(last)) = (curve.first().copied(), curve.last().copied()) else { continue };
+            let max = curve.iter().copied().fold(f64::MIN, f64::max);
+            let min = curve.iter().copied().fold(f64::MAX, f64::min);
+            let child = first_child[idx];
+            let at = child.and_then(|c| source(&nodes, c)).or_else(|| source(&nodes, idx));
+            let oneshot = v["oneshot"].as_bool().unwrap_or(true);
+            // Runs forward then back to where it started: GPUI's bounce(..).
+            let round_trip = (last - first).abs() < 0.05 && max - first > 0.5;
+            let dot = child.is_some_and(|c| {
+                let b = rect(&nodes[c].v["bounds"]).unwrap_or_default();
+                let radius = sides(&nodes[c].v["style"]["cornerRadii"]).into_iter().fold(0.0, f64::max);
+                b[2] <= 12.0 && b[3] <= 12.0 && radius >= b[2].min(b[3]) / 2.0
+            });
+            if max > 1.02 || min < -0.02 {
+                sink.push("bounce-easing", at, format!("easing overshoots to {:.2}", if max > 1.02 { max } else { min }));
+            } else if !oneshot && dot {
+                sink.push("pulsing-dot", at, format!("repeating {}ms animation on a small round dot", num(&v["durationMs"])));
+            } else if oneshot && round_trip {
+                sink.push("bounce-easing", at, "easing runs forward then back (bounce)".into());
             }
             continue;
         }
@@ -271,6 +384,27 @@ pub fn detect_snapshot(snapshot: &Value) -> Vec<Finding> {
                     at.clone(),
                     format!("{} {} on {}", quote(text), color_to_hex(Some(&ink)), color_to_hex(Some(&bg))),
                 );
+            }
+            let runs: Vec<Rgba> = v["runs"].as_array().into_iter().flatten().filter_map(|run| hex(&run["color"])).collect();
+            let resting_ok = worst.is_none_or(|(r, _)| r >= floor);
+            for state in ["hover", "active"] {
+                if !resting_ok || !state_changes(&nodes, idx, state) {
+                    continue;
+                }
+                let Some(state_bg) = backdrop_in(&nodes, idx, Some(state)) else { continue };
+                let inks = ink_in(&nodes, idx, state).map(|c| vec![c]).unwrap_or_else(|| runs.clone());
+                if let Some((ratio, ink)) = worst_ratio(&inks, &state_bg).filter(|(r, _)| *r < floor) {
+                    sink.push(
+                        "low-contrast",
+                        at.clone(),
+                        format!(
+                            "{} {} on {} on {state}: {ratio:.1}:1 (needs {floor}:1)",
+                            quote(text),
+                            color_to_hex(Some(&ink)),
+                            color_to_hex(Some(&state_bg))
+                        ),
+                    );
+                }
             }
             if let Some((ratio, ink)) = worst.filter(|(r, _)| *r < floor) {
                 sink.push(
@@ -399,6 +533,102 @@ mod tests {
             el(None, 2, json!({ "borderWidths": [0, 0, 0, 4], "cornerRadii": [9999, 9999, 9999, 9999], "borderColor": "#7c3aedff" })),
         ]});
         assert!(detect_snapshot(&snap).is_empty());
+    }
+
+
+    fn input(clickable: bool, focusable: bool, tooltip: bool) -> Value {
+        json!({ "clickable": clickable, "focusable": focusable, "tooltip": tooltip, "tabIndex": null, "keyContext": false, "actions": 0, "label": null })
+    }
+
+    #[test]
+    fn input_rules_find_unreachable_unnamed_and_focusless_controls() {
+        let mut icon = el(Some(0), 2, json!({}));
+        icon["bounds"] = json!([10, 10, 24, 24]);
+        icon["input"] = input(true, false, false);
+        let mut ring = el(Some(0), 4, json!({}));
+        ring["bounds"] = json!([40, 10, 120, 32]);
+        ring["input"] = input(true, true, false);
+        ring["states"] = json!({});
+        let mut named = el(Some(0), 6, json!({}));
+        named["bounds"] = json!([10, 50, 24, 24]);
+        named["input"] = input(true, true, true);
+        named["states"] = json!({ "focusVisible": { "border_color": "#2563ebff" } });
+        let snap = json!({ "nodes": [
+            el(None, 1, json!({ "background": solid("#ffffffff") })),
+            icon,
+            el(Some(1), 3, json!({})),
+            ring,
+            txt(3, "Save", "#18181bff", "IBM Plex Sans"),
+            named,
+            el(Some(5), 7, json!({})),
+        ]});
+        let found = detect_snapshot(&snap);
+        let ids: Vec<(&str, f64)> = found.iter().map(|f| (f.antipattern.as_str(), f.line)).collect();
+        assert!(ids.contains(&(UNREACHABLE_CONTROL, 2.0)), "{ids:?}");
+        assert!(ids.contains(&(UNNAMED_ICON_BUTTON, 2.0)), "{ids:?}");
+        assert!(ids.contains(&(NO_FOCUS_STYLE, 4.0)), "{ids:?}");
+        assert!(!ids.iter().any(|(_, line)| *line == 6.0 || *line == 7.0), "{ids:?}");
+        let f = found.iter().find(|f| f.antipattern == UNREACHABLE_CONTROL).unwrap();
+        assert_eq!(f.name, "Control the keyboard cannot reach");
+    }
+
+    #[test]
+    fn a_focusable_container_with_actions_covers_its_clickable_rows() {
+        let mut list = el(None, 1, json!({}));
+        list["input"] = json!({ "clickable": false, "focusable": true, "actions": 3, "keyContext": true });
+        let mut row = el(Some(0), 2, json!({}));
+        row["input"] = input(true, false, false);
+        let snap = json!({ "nodes": [list, row, txt(1, "Row", "#18181bff", "IBM Plex Sans")] });
+        assert!(detect_snapshot(&snap).iter().all(|f| f.antipattern != UNREACHABLE_CONTROL));
+    }
+
+    #[test]
+    fn hover_states_get_their_own_contrast_check() {
+        let mut button = el(Some(0), 2, json!({ "background": solid("#ffffffff") }));
+        button["states"] = json!({ "hover": { "background": solid("#e4e4e7ff"), "text": { "color": "#a1a1aaff" } } });
+        let snap = json!({ "nodes": [el(None, 1, json!({ "background": solid("#ffffffff") })), button, txt(1, "Save", "#18181bff", "IBM Plex Sans")] });
+        let found = detect_snapshot(&snap);
+        let lc: Vec<&str> = found.iter().filter(|f| f.antipattern == "low-contrast").map(|f| f.snippet.as_str()).collect();
+        assert_eq!(lc.len(), 1, "{lc:?}");
+        assert!(lc[0].contains("on hover"), "{}", lc[0]);
+    }
+
+    #[test]
+    fn animations_are_read_from_their_easing_samples() {
+        let anim = |oneshot: bool, curve: &[f64]| json!({ "kind": "animation", "parent": 0, "durationMs": 1200, "oneshot": oneshot, "easing": curve });
+        let mut dot = el(Some(1), 3, json!({ "cornerRadii": [4, 4, 4, 4] }));
+        dot["bounds"] = json!([0, 0, 8, 8]);
+        let mut panel = el(Some(3), 5, json!({}));
+        panel["bounds"] = json!([0, 0, 200, 100]);
+        let pingpong = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 0.8, 0.6, 0.4, 0.2, 0.0];
+        let back = [0.0, 0.3, 0.6, 0.9, 1.1, 1.15, 1.1, 1.05, 1.02, 1.01, 1.0];
+        let snap = json!({ "nodes": [
+            el(None, 1, json!({})),
+            anim(false, &pingpong),
+            dot,
+            anim(true, &back),
+            el(Some(0), 9, json!({})),
+            panel,
+        ]});
+        let found = detect_snapshot(&snap);
+        let ids: Vec<(&str, f64)> = found.iter().map(|f| (f.antipattern.as_str(), f.line)).collect();
+        assert!(ids.contains(&("pulsing-dot", 3.0)), "{ids:?}");
+        assert!(ids.contains(&("bounce-easing", 5.0)), "{ids:?}");
+    }
+
+    #[test]
+    fn long_scrolling_containers_should_be_virtual() {
+        let mut list = el(None, 1, json!({}));
+        list["bounds"] = json!([0, 0, 300, 400]);
+        list["content"] = json!([300, 2400]);
+        let mut nodes = vec![list];
+        for _ in 0..60 {
+            nodes.push(el(Some(0), 2, json!({})));
+        }
+        let found = detect_snapshot(&json!({ "nodes": nodes }));
+        let f = found.iter().find(|f| f.antipattern == UNVIRTUALIZED_LIST).expect("long list");
+        assert_eq!(f.line, 1.0);
+        assert!(f.snippet.starts_with("60 children"), "{}", f.snippet);
     }
 
 }

@@ -384,6 +384,35 @@ fn font_rules(lexed: &Lexed, tokens: &Tokens) -> Vec<Hit> {
     out
 }
 
+/// An icon-only child: `svg()`, `img(..)`, or an icon component.
+fn is_icon(expr: &str) -> bool {
+    let e = expr.trim();
+    e.starts_with("svg()") || e.starts_with("img(") || e.starts_with("Icon::") || e.starts_with("icon(") || e.contains("IconName::")
+}
+
+/// Keyboard rules a source chain can answer on its own. Reachability needs
+/// the painted tree (`impeccable gpui snapshot`): a focusable container
+/// built elsewhere may handle the row's command.
+fn input_rules(chain: &Chain) -> Vec<Hit> {
+    let mut out = Vec::new();
+    // A helper such as `button(id, label, ..)` may name and focus itself.
+    if !matches!(chain.root.as_str(), "div" | "h_flex" | "v_flex") {
+        return out;
+    }
+    let Some(click) = chain.call("on_click").or_else(|| chain.call("on_mouse_down")) else { return out };
+    let kids: Vec<&str> = chain.calls.iter().filter(|c| c.name == "child").map(|c| c.args.as_str()).collect();
+    let icon_only = !kids.is_empty() && chain.call("children").is_none() && kids.iter().all(|k| is_icon(k));
+    let named = ["tooltip", "aria_label", "label"].iter().any(|n| chain.call(n).is_some());
+    if icon_only && !named {
+        out.push(hit(crate::pack::UNNAMED_ICON_BUTTON, click.line, format!("{} with only an icon child and no .tooltip(..)", click.name)));
+    }
+    let focus_styled = ["focus", "focus_visible", "in_focus"].iter().any(|n| chain.call(n).is_some());
+    if chain.call("track_focus").is_some() && chain.call("key_context").is_none() && !focus_styled {
+        out.push(hit(crate::pack::NO_FOCUS_STYLE, click.line, "track_focus + on_click with no .focus(..) or .focus_visible(..) style".into()));
+    }
+    out
+}
+
 pub fn run(lexed: &Lexed, chains: &[Chain], tokens: &Tokens) -> Vec<Hit> {
     let styles: Vec<Style> = chains.iter().map(style_of).collect();
     let mut out = font_rules(lexed, tokens);
@@ -404,6 +433,7 @@ pub fn run(lexed: &Lexed, chains: &[Chain], tokens: &Tokens) -> Vec<Hit> {
         if s.widths.iter().all(|w| *w == 1.0) && matches!(s.shadow.as_deref(), Some("xl" | "2xl")) {
             out.push(hit("gpt-thin-border-wide-shadow", s.border_call_line, format!("border_1 + shadow_{}", s.shadow.as_deref().unwrap())));
         }
+        out.extend(input_rules(chain));
         // An input or a chip is a framed box too; a nested card holds content.
         let holds_content = chain.calls.iter().filter(|c| c.name == "child" || c.name == "children").count() >= 2;
         if is_card(s) && holds_content {

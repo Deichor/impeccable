@@ -63,7 +63,21 @@ impl Render for Demo {
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().text_size(px(22.)).text_color(text()).child("Builds"))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(div().text_size(px(22.)).text_color(text()).child("Builds"))
+                    .child(
+                        div()
+                            .id("refresh")
+                            .size(px(28.))
+                            .rounded_md()
+                            .hover(|s| s.bg(card()))
+                            .on_click(|_, _, _| {})
+                            .child(div().size(px(14.)).rounded_full().bg(faint())),
+                    ),
+            )
             .child(item("Release 0.4.2", "Finished 2 minutes ago"))
             .child(item("Nightly", "Running for 14 minutes"))
             .child(

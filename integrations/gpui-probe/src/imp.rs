@@ -657,8 +657,25 @@ fn snapshot_json(snap: &gpui::UiSnapshot) -> Value {
             "clip": rect(&node.clip),
         });
         let extra = match &node.kind {
-            UiNodeKind::Element { style, content_size } => json!({
+            UiNodeKind::Element { style, content_size, states, interaction } => json!({
                 "kind": "element",
+                "states": without_nulls(json!({
+                    "hover": states.hover.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+                    "active": states.active.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+                    "focus": states.focus.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+                    "focusVisible": states.focus_visible.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+                })),
+                "input": {
+                    "clickable": interaction.clickable,
+                    "focusable": interaction.focusable,
+                    "focused": interaction.focused,
+                    "hovered": interaction.hovered,
+                    "tooltip": interaction.tooltip,
+                    "tabIndex": interaction.tab_index,
+                    "keyContext": interaction.key_context,
+                    "actions": interaction.actions,
+                    "label": interaction.label.as_ref().map(|l| l.to_string()),
+                },
                 "content": [f32::from(content_size.width), f32::from(content_size.height)],
                 "style": without_nulls(json!({
                     "background": serde_json::to_value(&style.background).ok(),
@@ -670,6 +687,12 @@ fn snapshot_json(snap: &gpui::UiSnapshot) -> Value {
                     "overflow": serde_json::to_value(&style.overflow).ok(),
                     "text": serde_json::to_value(&style.text).ok(),
                 })),
+            }),
+            UiNodeKind::Animation { duration, oneshot, easing } => json!({
+                "kind": "animation",
+                "durationMs": duration.as_millis() as u64,
+                "oneshot": oneshot,
+                "easing": easing,
             }),
             UiNodeKind::Text { text, shown, style, font_size, line_height, size, runs } => json!({
                 "kind": "text",
@@ -841,7 +864,12 @@ mod tests {
             id: None,
             bounds: b,
             clip: b,
-            kind: UiNodeKind::Element { style: Box::new(Style::default()), content_size: b.size },
+            kind: UiNodeKind::Element {
+                style: Box::new(Style::default()),
+                content_size: b.size,
+                states: Default::default(),
+                interaction: Default::default(),
+            },
         };
         // A Location from this file stands in for the probe's own inspector panel.
         let here = std::panic::Location::caller();
