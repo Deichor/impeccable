@@ -1,8 +1,8 @@
 //! macOS. ScreenCaptureKit captures the window as it was last presented. It is
 //! loaded at run time, so systems without it still launch; capture needs
 //! macOS 14. Its callbacks run on its own queue, so the main thread never
-//! waits. Pointer input is posted to the app's own event queue as `NSEvent`s,
-//! so picking needs no permission.
+//! waits. Pointer input goes straight to GPUI's view, so picking needs no
+//! permission and does not focus the window.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{mpsc, OnceLock};
@@ -211,23 +211,20 @@ fn to_rgba(image: &CGImage) -> Result<Rgba, String> {
     Ok(Rgba { width: width as u32, height: height as u32, pixels })
 }
 
+/// Queue a pointer move (and, with `click`, a left click) at a point in
+/// logical pixels for GPUI's view. The view gets the events from the main run
+/// loop, outside this App update, and the window's key state is untouched.
 #[cfg(feature = "gpui-0-2")]
-/// Post a pointer move (and, with `click`, a left click) at a point in
-/// logical pixels to the app's own event queue, as AppKit would deliver it.
 pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), String> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
     use objc2_foundation::{NSPoint, NSProcessInfo};
 
-    let mtm = MainThreadMarker::new().ok_or("pointer events must be posted on the main thread")?;
-    let ns_window = ns_window(window)?;
-    let content = ns_window.contentView().ok_or("the window has no content view")?.frame();
-    // GPUI reads y from the bottom of the content view.
-    let location = NSPoint::new(x as f64, content.size.height - y as f64);
-    let number = ns_window.windowNumber();
+    let view = gpui_view(window)?;
+    let number = ns_window(window)?.windowNumber();
+    // GPUI reads y from the bottom of its view.
+    let location = NSPoint::new(x as f64, view.frame().size.height - y as f64);
     let time = NSProcessInfo::processInfo().systemUptime();
-    let app = NSApplication::sharedApplication(mtm);
-    let post = |kind: NSEventType, clicks: isize, pressure: f32| -> Result<(), String> {
+    let send = |kind: NSEventType, clicks: isize, pressure: f32| -> Result<(), String> {
         let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
             kind,
             location,
@@ -240,14 +237,20 @@ pub fn post_pointer(window: &Window, x: f32, y: f32, click: bool) -> Result<(), 
             pressure,
         )
         .ok_or("AppKit refused the mouse event")?;
-        app.postEvent_atStart(&event, false);
+        let action = match kind {
+            NSEventType::LeftMouseDown => sel!(mouseDown:),
+            NSEventType::LeftMouseUp => sel!(mouseUp:),
+            _ => sel!(mouseMoved:),
+        };
+        unsafe {
+            let _: () = msg_send![view, performSelectorOnMainThread: action, withObject: &*event, waitUntilDone: false];
+        }
         Ok(())
     };
-    post(NSEventType::MouseMoved, 0, 0.0)?;
+    send(NSEventType::MouseMoved, 0, 0.0)?;
     if click {
-        post(NSEventType::LeftMouseDown, 1, 1.0)?;
-        post(NSEventType::LeftMouseUp, 1, 0.0)?;
+        send(NSEventType::LeftMouseDown, 1, 1.0)?;
+        send(NSEventType::LeftMouseUp, 1, 0.0)?;
     }
     Ok(())
 }
-
