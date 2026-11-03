@@ -44,3 +44,7 @@ With the probe attached, `live` and `generate` run on the window instead of a br
 4. Write the accepted patch into the builder chain at the source line, in the app's own vocabulary: scale methods (`.p_3()`), theme tokens for colors, not raw values. Rebuild and capture to confirm.
 
 Patches cover style only. A variant that changes structure, children, or copy is a code edit: build the alternatives behind one `match` on a debug-only index, rebuild once, and let the user compare. <!-- rule:gpui-live-variants -->
+
+## Window snapshot
+
+When the probe is built with its `snapshot` feature (gpui-pre with the new-horizon-code-repo/gpui patch), `{{scripts_path}}/impeccable gpui snapshot` returns what the window actually painted and checks it: `low-contrast` against the composited fill behind each text, `tiny-text`, and `text-overflow` for text cut off by its clip, each at the source line of the element holding the text. Run it in both appearances (`POST /appearance` through `capture --appearances`, or the app's own switch) and at the smallest supported size; it sees resolved theme branches and `.when(..)` styles that the source scan cannot. A probe without the feature answers 501; fall back to captures. <!-- rule:gpui-snapshot -->

@@ -37,7 +37,10 @@ crates/
 `integrations/gpui-probe` sits outside the workspace (`exclude` in the root
 `Cargo.toml`): it depends on GPUI and is added to a GPUI app's own debug
 build. `impeccable gpui` (`crates/context/src/gpui_probe.rs`) talks to it over
-localhost; the engine itself never links GPUI.
+localhost; the engine itself never links GPUI. The probe builds against
+`gpui` 0.2 by default or `gpui-pre` (feature `gpui-pre`); its `snapshot`
+feature needs the new-horizon-code-repo/gpui patch, and `impeccable gpui
+snapshot` runs `crates/gpui/src/snapshot.rs` over the painted tree it returns.
 
 ```
   html         the static HTML engine: parser, cascade, static DOM, rule adapters

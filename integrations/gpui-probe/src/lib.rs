@@ -13,6 +13,11 @@
 //! style variants on the element picked in GPUI's inspector (Phase 4). In a
 //! release build `attach` does nothing.
 
+#[cfg(all(feature = "gpui-0-2", feature = "gpui-pre"))]
+compile_error!("pick one GPUI: `gpui-0-2` (default) or `gpui-pre` (with default-features = false)");
+#[cfg(not(any(feature = "gpui-0-2", feature = "gpui-pre")))]
+compile_error!("enable `gpui-0-2` or `gpui-pre`");
+
 use gpui::App;
 
 #[cfg(debug_assertions)]

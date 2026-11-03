@@ -10,6 +10,23 @@ use gpui::{
 use serde_json::{json, Map, Value};
 
 use crate::server::{self, Reply, Request};
+
+/// `AsyncApp::update` returns a `Result` on gpui 0.2 and the value on gpui-pre.
+trait Up {
+    fn up<R>(&self, f: impl FnOnce(&mut App) -> R) -> Result<R, ()>;
+}
+
+impl Up for AsyncApp {
+    #[cfg(feature = "gpui-0-2")]
+    fn up<R>(&self, f: impl FnOnce(&mut App) -> R) -> Result<R, ()> {
+        self.update(f).map_err(|_| ())
+    }
+
+    #[cfg(feature = "gpui-pre")]
+    fn up<R>(&self, f: impl FnOnce(&mut App) -> R) -> Result<R, ()> {
+        Ok(self.update(f))
+    }
+}
 use crate::Options;
 
 actions!(impeccable_probe, [ToggleInspector, NextVariant, PreviousVariant, AcceptVariant, RevertVariant]);
@@ -96,7 +113,10 @@ pub fn attach(cx: &mut App, options: Options) {
     });
 
     cx.set_inspector_renderer(Box::new(render_panel));
+    #[cfg(feature = "gpui-0-2")]
     cx.register_inspector_element(record_selection);
+    #[cfg(feature = "gpui-pre")]
+    cx.register_inspector_element(|_, _| record_selection);
 
     cx.spawn(async move |cx: &mut AsyncApp| loop {
         while let Ok(req) = rx.try_recv() {
@@ -346,12 +366,12 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
     let route = req.path.split('?').next().unwrap_or("").to_string();
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let reply = match (req.method.as_str(), route.as_str()) {
-        ("GET", "/status") => cx.update(status).unwrap_or_else(|_| Reply::error(500, "app gone")),
+        ("GET", "/status") => cx.up(status).unwrap_or_else(|_| Reply::error(500, "app gone")),
         ("POST", "/resize") => {
             let (w, h) = (body["width"].as_f64(), body["height"].as_f64());
             match (w, h) {
                 (Some(w), Some(h)) => {
-                    let done = cx.update(|cx| with_window(cx, |window, _| window.resize(gpui::size(px(w as f32), px(h as f32)))));
+                    let done = cx.up(|cx| with_window(cx, |window, _| window.resize(gpui::size(px(w as f32), px(h as f32)))));
                     cx.background_executor().timer(Duration::from_millis(250)).await;
                     match done {
                         Ok(Some(())) => Reply::json(200, &json!({ "ok": true })),
@@ -363,7 +383,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
         }
         ("POST", "/appearance") => match body["dark"].as_bool() {
             Some(dark) => {
-                let r = cx.update(|cx| {
+                let r = cx.up(|cx| {
                     let shared = probe(cx);
                     let hook = shared.borrow_mut().on_appearance.take();
                     let Some(hook) = hook else { return false };
@@ -384,7 +404,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
             None => Reply::error(400, "body needs dark: true|false"),
         },
         ("GET", "/capture") => {
-            let r = cx.update(|cx| with_window(cx, |window, _| crate::capture::window_png(window)));
+            let r = cx.up(|cx| with_window(cx, |window, _| crate::capture::window_png(window)));
             match r {
                 Ok(Some(Ok(png))) => Reply::png(png),
                 Ok(Some(Err(e))) => Reply::error(500, &e),
@@ -393,7 +413,7 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
         }
         ("POST", "/inspector") => {
             let open = body["open"].as_bool();
-            match cx.update(|cx| set_inspector(cx, open)) {
+            match cx.up(|cx| set_inspector(cx, open)) {
                 Ok(open) => {
                     cx.background_executor().timer(Duration::from_millis(150)).await;
                     Reply::json(200, &json!({ "ok": true, "open": open }))
@@ -403,35 +423,42 @@ async fn handle(req: Request, cx: &mut AsyncApp) {
         }
         ("POST", "/pick") => match (body["x"].as_f64(), body["y"].as_f64()) {
             (Some(x), Some(y)) => {
-                let _ = cx.update(|cx| set_inspector(cx, Some(true)));
+                let _ = cx.up(|cx| set_inspector(cx, Some(true)));
                 cx.background_executor().timer(Duration::from_millis(150)).await;
-                let moved = cx.update(|cx| pointer(cx, x as f32, y as f32, false));
+                let moved = cx.up(|cx| pointer(cx, x as f32, y as f32, false));
                 cx.background_executor().timer(Duration::from_millis(150)).await;
-                let clicked = cx.update(|cx| pointer(cx, x as f32, y as f32, true));
+                let clicked = cx.up(|cx| pointer(cx, x as f32, y as f32, true));
                 // The picked element records its state on the next frame.
                 cx.background_executor().timer(Duration::from_millis(250)).await;
                 match (moved, clicked) {
-                    (Ok(Ok(())), Ok(Ok(()))) => cx.update(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
+                    (Ok(Ok(())), Ok(Ok(()))) => cx.up(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
                     (Ok(Err(e)), _) | (_, Ok(Err(e))) => Reply::error(500, &e),
                     _ => Reply::error(500, "app gone"),
                 }
             }
             _ => Reply::error(400, "body needs x and y in window points"),
         },
-        ("GET", "/selection") => cx.update(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
+        #[cfg(feature = "snapshot")]
+        ("GET", "/snapshot") => snapshot(cx).await,
+        #[cfg(not(feature = "snapshot"))]
+        ("GET", "/snapshot") => Reply::error(
+            501,
+            "this probe was built without the `snapshot` feature; it needs gpui-pre with the new-horizon-code-repo/gpui patch",
+        ),
+        ("GET", "/selection") => cx.up(selection).unwrap_or_else(|_| Reply::error(500, "app gone")),
         ("POST", "/variants") => cx
-            .update(|cx| set_variants(cx, &body))
+            .up(|cx| set_variants(cx, &body))
             .unwrap_or_else(|_| Reply::error(500, "app gone")),
         ("POST", "/apply") => {
             let index = body["index"].as_u64().map(|i| i as usize);
-            match cx.update(|cx| apply(cx, index)) {
+            match cx.up(|cx| apply(cx, index)) {
                 Ok(Ok(())) => Reply::json(200, &json!({ "ok": true, "index": index })),
                 Ok(Err(e)) => Reply::error(409, &e),
                 Err(_) => Reply::error(500, "app gone"),
             }
         }
         ("GET", "/decision") => cx
-            .update(|cx| {
+            .up(|cx| {
                 let s = probe(cx);
                 let s = s.borrow();
                 Reply::json(200, &json!({ "seq": s.live.seq, "decision": s.live.decision }))
@@ -531,4 +558,93 @@ fn set_variants(cx: &mut App, body: &Value) -> Reply {
     }
     let shown = if count > 0 { apply(cx, Some(0)).err() } else { None };
     Reply::json(200, &json!({ "ok": true, "count": count, "warning": shown }))
+}
+
+// ─── snapshot ──────────────────────────────────────────────────────────────
+
+#[cfg(feature = "snapshot")]
+async fn snapshot(cx: &mut AsyncApp) -> Reply {
+    let requested = cx.up(|cx| with_window(cx, |window, _| window.request_ui_snapshot()));
+    if !matches!(requested, Ok(Some(()))) {
+        return Reply::error(500, "no window");
+    }
+    for _ in 0..150 {
+        cx.background_executor().timer(Duration::from_millis(20)).await;
+        if let Ok(Some(Some(snap))) = cx.up(|cx| with_window(cx, |window, _| window.take_ui_snapshot())) {
+            return Reply::json(200, &snapshot_json(&snap));
+        }
+    }
+    Reply::error(504, "the window drew no frame in 3 seconds")
+}
+
+#[cfg(feature = "snapshot")]
+fn snapshot_json(snap: &gpui::UiSnapshot) -> Value {
+    use gpui::{Bounds, Pixels, UiNodeKind};
+
+    let rect = |b: &Bounds<Pixels>| json!([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
+    let own_file = file!().replace('\\', "/");
+    // The probe's own inspector panel is not part of the app.
+    let is_probe = |loc: &std::panic::Location| loc.file().replace('\\', "/").ends_with(&own_file);
+
+    let len = |l: gpui::AbsoluteLength| f32::from(l.to_pixels(snap.rem_size));
+
+    let mut index = vec![None; snap.nodes.len()];
+    let mut nodes = Vec::new();
+    for (i, node) in snap.nodes.iter().enumerate() {
+        let parent = match node.parent {
+            Some(p) => match index[p] {
+                Some(p) => Some(p),
+                None => continue,
+            },
+            None => None,
+        };
+        if node.source.is_some_and(is_probe) {
+            continue;
+        }
+        index[i] = Some(nodes.len());
+        let mut v = json!({
+            "parent": parent,
+            "source": node.source.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
+            "id": node.id.as_ref().map(|id| id.to_string()),
+            "bounds": rect(&node.bounds),
+            "clip": rect(&node.clip),
+        });
+        let extra = match &node.kind {
+            UiNodeKind::Element { style, content_size } => json!({
+                "kind": "element",
+                "content": [f32::from(content_size.width), f32::from(content_size.height)],
+                "style": without_nulls(json!({
+                    "background": serde_json::to_value(&style.background).ok(),
+                    "borderColor": serde_json::to_value(&style.border_color).ok(),
+                    "borderWidths": [len(style.border_widths.top), len(style.border_widths.right), len(style.border_widths.bottom), len(style.border_widths.left)],
+                    "cornerRadii": [len(style.corner_radii.top_left), len(style.corner_radii.top_right), len(style.corner_radii.bottom_right), len(style.corner_radii.bottom_left)],
+                    "boxShadow": serde_json::to_value(&style.box_shadow).ok(),
+                    "opacity": style.opacity,
+                    "overflow": serde_json::to_value(&style.overflow).ok(),
+                    "text": serde_json::to_value(&style.text).ok(),
+                })),
+            }),
+            UiNodeKind::Text { text, shown, style, font_size, line_height, size, runs } => json!({
+                "kind": "text",
+                "text": text.to_string(),
+                "shown": shown.to_string(),
+                "fontSize": f32::from(*font_size),
+                "lineHeight": f32::from(*line_height),
+                "size": [f32::from(size.width), f32::from(size.height)],
+                "fontFamily": style.font_family.to_string(),
+                "fontWeight": style.font_weight.0,
+                "runs": runs.iter().map(|(len, color, bg)| json!({ "len": len, "color": color, "background": bg })).collect::<Vec<_>>(),
+            }),
+        };
+        if let (Value::Object(v), Value::Object(extra)) = (&mut v, extra) {
+            v.extend(extra);
+        }
+        nodes.push(v);
+    }
+    json!({
+        "viewport": [f32::from(snap.viewport.width), f32::from(snap.viewport.height)],
+        "scale": snap.scale_factor,
+        "rem": f32::from(snap.rem_size),
+        "nodes": nodes,
+    })
 }

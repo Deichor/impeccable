@@ -1,8 +1,10 @@
-//! A small GPUI window wired to the probe: `cargo run --example demo`.
+//! A small GPUI window wired to the probe: `cargo run --example demo`
+//! (gpui 0.2), or `cargo run --example demo --no-default-features --features snapshot`
+//! (gpui-pre with the snapshot patch).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gpui::{div, prelude::*, px, rgb, size, App, Application, Bounds, Context, Rgba, Window, WindowBounds, WindowOptions};
+use gpui::{div, prelude::*, px, rgb, size, App, Bounds, Context, Rgba, Window, WindowBounds, WindowOptions};
 
 static DARK: AtomicBool = AtomicBool::new(true);
 
@@ -52,11 +54,30 @@ impl Render for Demo {
             .child(div().text_size(px(22.)).text_color(text()).child("Builds"))
             .child(item("Release 0.4.2", "Finished 2 minutes ago"))
             .child(item("Nightly", "Running for 14 minutes"))
+            .child(
+                div()
+                    .w(px(160.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(13.))
+                    .text_color(text())
+                    .child("Deploy to eu-west-1 failed after 3 retries"),
+            )
     }
 }
 
+#[cfg(feature = "gpui-0-2")]
+fn application() -> gpui::Application {
+    gpui::Application::new()
+}
+
+#[cfg(feature = "gpui-pre")]
+fn application() -> gpui::Application {
+    gpui_platform::application()
+}
+
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(720.), px(480.)), cx);
         cx.open_window(
             WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },

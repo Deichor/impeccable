@@ -9,9 +9,11 @@
 mod lex;
 mod model;
 mod rules;
+mod snapshot;
 mod tokens;
 mod value;
 
+pub use snapshot::detect_snapshot;
 pub use tokens::Tokens;
 
 use impeccable_core::findings::{try_finding, Finding};

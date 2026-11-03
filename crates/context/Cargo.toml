@@ -15,6 +15,7 @@ core-registry = []
 impeccable-common = { workspace = true, features = ["seed"] }
 impeccable-comp = { workspace = true }
 impeccable-core = { workspace = true }
+impeccable-gpui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }

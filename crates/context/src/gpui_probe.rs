@@ -24,6 +24,9 @@ Talks to a running GPUI app built with impeccable-gpui-probe (debug builds).
   variants --file <json>         {\"variants\":[{\"label\":..,\"style\":{..patch..}}]}
   apply --index <n> | --original show one variant, or the original style
   decision [--wait]              what the user accepted (ctrl-alt-enter in the app)
+  snapshot [--out <file>] [--raw]
+                                 everything the window painted, checked for contrast,
+                                 tiny text and cut-off text (probe built with `snapshot`)
 ";
 
 const WAIT_LIMIT: Duration = Duration::from_secs(600);
@@ -192,6 +195,21 @@ fn dispatch(sub: &str, args: &[String], cwd: &str) -> Result<Value, String> {
             } else {
                 get_json(port, "/decision")
             }
+        }
+        "snapshot" => {
+            let snap = get_json(port, "/snapshot")?;
+            if let Some(out) = flag(args, "--out") {
+                let text = serde_json::to_string_pretty(&snap).unwrap_or_default();
+                std::fs::write(jsp::resolve(cwd, &[out]), text).map_err(|e| format!("{out}: {e}"))?;
+            }
+            if has(args, "--raw") {
+                return Ok(snap);
+            }
+            Ok(json!({
+                "nodes": snap["nodes"].as_array().map_or(0, Vec::len),
+                "viewport": snap["viewport"],
+                "findings": impeccable_gpui::detect_snapshot(&snap),
+            }))
         }
         other => Err(format!("unknown gpui command `{other}`\n\n{USAGE}")),
     }

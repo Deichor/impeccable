@@ -8,8 +8,19 @@ description = "Debug-build bridge between a GPUI app and Impeccable: window capt
 
 # Not a member of the engine workspace: the engine must build without GPUI.
 
+[features]
+default = ["gpui-0-2"]
+# The crates.io GPUI release apps use today.
+gpui-0-2 = ["dep:gpui"]
+# Zed's weekly gpui-pre snapshots, which gpui-kit also builds on.
+gpui-pre = ["dep:gpui-pre", "dep:gpui_platform"]
+# Window UI snapshots; needs the new-horizon-code-repo/gpui fork patched in for gpui-pre.
+snapshot = ["gpui-pre"]
+
 [dependencies]
-gpui = "0.2"
+gpui = { version = "0.2", optional = true }
+gpui-pre = { version = "=0.3.11", optional = true }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", optional = true }
 serde_json = "1"
 raw-window-handle = "0.6"
 png = "0.17"
@@ -25,3 +36,8 @@ features = [
 
 [[example]]
 name = "demo"
+
+# Building the probe itself (examples, checks) against the fork. Apps add the
+# same patch to their own workspace root.
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/new-horizon-code-repo/gpui", branch = "main" }

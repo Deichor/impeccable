@@ -621,6 +621,7 @@ dependencies = [
  "impeccable-common",
  "impeccable-comp",
  "impeccable-core",
+ "impeccable-gpui",
  "once_cell",
  "regex",
  "rustls-native-certs",
