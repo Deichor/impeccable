@@ -50,7 +50,7 @@ pub fn start(window: &Window) -> Result<Shot, String> {
     #[cfg(target_os = "macos")]
     return macos::start(window);
     #[cfg(target_os = "linux")]
-    return Ok(Shot::Done(linux::window_rgba(window)));
+    return linux::start(window);
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         let _ = window;
